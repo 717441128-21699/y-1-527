@@ -16,7 +16,10 @@ import {
   AdjustmentLog,
   ApprovalRecord,
   ShockVerification,
-  NucleosynthesisAssessment
+  NucleosynthesisAssessment,
+  SimulationVersion,
+  TimelineEvent,
+  NuclideAbundance
 } from '@/types';
 import {
   mockTasks,
@@ -47,11 +50,14 @@ interface AppState {
   reactionNetworks: ConfigItem[];
   warningThresholds: WarningThresholds;
   monitoringData: Record<string, MonitoringDataPoint[]>;
-  nuclideData: Record<string, ReturnType<typeof generateNuclideData>>;
+  nuclideData: Record<string, NuclideAbundance[]>;
   performanceMetrics: PerformanceMetrics[];
   isLoading: boolean;
   activeEngines: Record<string, SimulationEngine>;
   multimessengerPushed: Record<string, boolean>;
+  simulationVersions: Record<string, SimulationVersion[]>;
+  timelineEvents: Record<string, TimelineEvent[]>;
+  currentVersion: Record<string, number>;
   
   setCurrentUser: (user: User) => void;
   getTaskById: (id: string) => SimulationTask | undefined;
@@ -63,7 +69,7 @@ interface AppState {
   addReport: (report: SimulationReport) => void;
   addExport: (exportTask: ExportTask) => void;
   updateExport: (id: string, updates: Partial<ExportTask>) => void;
-  getMonitoringData: (taskId: string) => MonitoringDataPoint[];
+  getMonitoringData: (taskId: string, version?: number) => MonitoringDataPoint[];
   addMonitoringData: (taskId: string, data: MonitoringDataPoint) => void;
   updateApprovalStatus: (taskId: string, status: ApprovalStatus) => void;
   setIsLoading: (loading: boolean) => void;
@@ -82,6 +88,9 @@ interface AppState {
     newValue: string;
     reason: string;
   }) => void;
+  getVersions: (taskId: string) => SimulationVersion[];
+  getCurrentVersion: (taskId: string) => number;
+  setCurrentVersion: (taskId: string, version: number) => void;
   
   submitForApproval: (taskId: string) => void;
   approvePostdoc: (taskId: string, verification: ShockVerification, comments: string) => void;
@@ -93,367 +102,668 @@ interface AppState {
   pushToMultimessenger: (taskId: string) => void;
   
   checkNi56Deviation: (progenitorMass: number) => { hasDeviation: boolean; lastThree: number[] };
+  
+  addTimelineEvent: (taskId: string, event: Omit<TimelineEvent, 'id' | 'taskId' | 'timestamp'> & { timestamp?: Date }) => void;
+  getTimelineEvents: (taskId: string) => TimelineEvent[];
 }
 
 const genId = () => Math.random().toString(36).substring(2, 11);
 
-export const useStore = create<AppState>((set, get) => ({
-  currentUser: mockUsers[0],
-  tasks: mockTasks,
-  warnings: mockWarnings,
-  reports: mockReports,
-  exports: mockExports,
-  recommendations: mockRecommendations,
-  dailyStats: generateDailyStats(30),
-  equationsOfState: mockEquationsOfState,
-  reactionNetworks: mockReactionNetworks,
-  warningThresholds: mockWarningThresholds,
-  monitoringData: {
+const initVersionsForTask = (task: SimulationTask, monitoringData: MonitoringDataPoint[], nuclideData: NuclideAbundance[]): SimulationVersion[] => {
+  return [{
+    version: 0,
+    label: '原始模拟',
+    parameters: { ...task.parameters },
+    startedAt: task.startedAt || task.createdAt,
+    completedAt: task.completedAt,
+    status: task.status,
+    monitoringData: [...monitoringData],
+    nuclideData: [...nuclideData],
+    ni56Yield: task.ni56Yield,
+    ge68Yield: task.ge68Yield
+  }];
+};
+
+const initTimelineForTask = (task: SimulationTask): TimelineEvent[] => {
+  const events: TimelineEvent[] = [];
+  
+  events.push({
+    id: `evt-${genId()}`,
+    taskId: task.id,
+    type: 'task_created',
+    timestamp: new Date(task.createdAt),
+    title: '任务创建',
+    description: `任务"${task.name}"已创建，前身星质量 ${task.parameters.mass} M☉`
+  });
+  
+  if (task.status !== SimulationStatus.PENDING_VALIDATION) {
+    events.push({
+      id: `evt-${genId()}`,
+      taskId: task.id,
+      type: 'stage_change',
+      timestamp: new Date(task.createdAt.getTime() + 60000),
+      title: '进入网格生成阶段',
+      description: '开始构建三维流体网格，初始化中微子输运与核网络'
+    });
+  }
+  
+  if (task.warnings.length > 0) {
+    task.warnings.forEach(w => {
+      events.push({
+        id: `evt-${genId()}`,
+        taskId: task.id,
+        type: 'warning_triggered',
+        timestamp: new Date(w.timestamp),
+        title: `触发${w.severity === 'critical' ? '严重' : ''}预警`,
+        description: w.message,
+        data: { warningId: w.id }
+      });
+    });
+  }
+  
+  return events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+};
+
+export const useStore = create<AppState>((set, get) => {
+  const initialVersions: Record<string, SimulationVersion[]> = {};
+  const initialTimeline: Record<string, TimelineEvent[]> = {};
+  const initialNuclideData: Record<string, NuclideAbundance[]> = {};
+  const initialMonitoring: Record<string, MonitoringDataPoint[]> = {
     'task-001': generateMonitoringData('task-001', 45),
     'task-002': generateMonitoringData('task-002', 68),
     'task-003': generateMonitoringData('task-003', 85),
     'task-004': generateMonitoringData('task-004', 100),
     'task-005': generateMonitoringData('task-005', 100),
     'task-007': generateMonitoringData('task-007', 100)
-  },
-  nuclideData: {
-    'task-004': generateNuclideData('task-004'),
-    'task-005': generateNuclideData('task-005'),
-    'task-007': generateNuclideData('task-007')
-  },
-  performanceMetrics: mockPerformanceMetrics,
-  isLoading: false,
-  activeEngines: {},
-  multimessengerPushed: {},
+  };
 
-  setCurrentUser: (user) => set({ currentUser: user }),
+  mockTasks.forEach(task => {
+    const mData = initialMonitoring[task.id] || [];
+    const nData = initialNuclideData[task.id] || [];
+    initialVersions[task.id] = initVersionsForTask(task, mData, nData);
+    initialTimeline[task.id] = initTimelineForTask(task);
+    initialNuclideData[task.id] = generateNuclideData(task.id);
+  });
 
-  getTaskById: (id) => get().tasks.find(t => t.id === id),
+  return {
+    currentUser: mockUsers[0],
+    tasks: mockTasks,
+    warnings: mockWarnings,
+    reports: mockReports,
+    exports: mockExports,
+    recommendations: mockRecommendations,
+    dailyStats: generateDailyStats(30),
+    equationsOfState: mockEquationsOfState,
+    reactionNetworks: mockReactionNetworks,
+    warningThresholds: mockWarningThresholds,
+    monitoringData: initialMonitoring,
+    nuclideData: initialNuclideData,
+    performanceMetrics: mockPerformanceMetrics,
+    isLoading: false,
+    activeEngines: {},
+    multimessengerPushed: {},
+    simulationVersions: initialVersions,
+    timelineEvents: initialTimeline,
+    currentVersion: {},
 
-  addTask: (task) => set((state) => ({
-    tasks: [task, ...state.tasks],
-    monitoringData: {
-      ...state.monitoringData,
-      [task.id]: []
-    }
-  })),
+    setCurrentUser: (user) => set({ currentUser: user }),
 
-  updateTask: (id, updates) => set((state) => ({
-    tasks: state.tasks.map(t => t.id === id ? { ...t, ...updates } : t)
-  })),
+    getTaskById: (id) => get().tasks.find(t => t.id === id),
 
-  updateTaskStatus: (id, status) => set((state) => ({
-    tasks: state.tasks.map(t => {
-      if (t.id !== id) return t;
-      
-      const newTimeline = t.stageTimeline.map(item => {
-        if (item.stage === status) {
-          return { ...item, status: 'running' as const, startTime: new Date() };
+    addTask: (task) => {
+      const version: SimulationVersion = {
+        version: 0,
+        label: '原始模拟',
+        parameters: { ...task.parameters },
+        startedAt: task.startedAt || task.createdAt,
+        completedAt: null,
+        status: task.status,
+        monitoringData: [],
+        nuclideData: [],
+        ni56Yield: undefined,
+        ge68Yield: undefined
+      };
+
+      const timeline: TimelineEvent[] = [{
+        id: `evt-${genId()}`,
+        taskId: task.id,
+        type: 'task_created',
+        timestamp: new Date(task.createdAt),
+        title: '任务创建',
+        description: `任务"${task.name}"已创建，前身星质量 ${task.parameters.mass} M☉，金属丰度 [Fe/H] = ${task.parameters.metallicity}`
+      }];
+
+      set((state) => ({
+        tasks: [task, ...state.tasks],
+        monitoringData: {
+          ...state.monitoringData,
+          [task.id]: []
+        },
+        simulationVersions: {
+          ...state.simulationVersions,
+          [task.id]: [version]
+        },
+        timelineEvents: {
+          ...state.timelineEvents,
+          [task.id]: timeline
+        },
+        currentVersion: {
+          ...state.currentVersion,
+          [task.id]: 0
         }
-        if (item.status === 'running') {
-          const endTime = new Date();
-          const duration = endTime.getTime() - new Date(item.startTime).getTime();
-          return { ...item, status: 'completed' as const, endTime, duration };
-        }
-        return item;
+      }));
+    },
+
+    updateTask: (id, updates) => set((state) => ({
+      tasks: state.tasks.map(t => t.id === id ? { ...t, ...updates } : t)
+    })),
+
+    updateTaskStatus: (id, status) => {
+      const stageNames: Record<SimulationStatus, string> = {
+        [SimulationStatus.PENDING_VALIDATION]: '待校验',
+        [SimulationStatus.GRID_GENERATION]: '网格生成',
+        [SimulationStatus.COLLAPSE_PHASE]: '引力塌缩阶段',
+        [SimulationStatus.SHOCK_BOUNCE]: '反弹激波形成',
+        [SimulationStatus.NUCLEOSYNTHESIS]: '核合成计算',
+        [SimulationStatus.COMPLETED]: '计算完成',
+        [SimulationStatus.ABNORMAL_FALLBACK]: '异常回退处理',
+        [SimulationStatus.PAUSED]: '已暂停',
+        [SimulationStatus.CANCELLED]: '已取消'
+      };
+
+      get().addTimelineEvent(id, {
+        type: 'stage_change',
+        title: `进入${stageNames[status]}阶段`,
+        description: `模拟状态更新为：${stageNames[status]}`
       });
+
+      set((state) => ({
+        tasks: state.tasks.map(t => {
+          if (t.id !== id) return t;
+          
+          const newTimeline = t.stageTimeline.map(item => {
+            if (item.stage === status) {
+              return { ...item, status: 'running' as const, startTime: new Date() };
+            }
+            if (item.status === 'running') {
+              const endTime = new Date();
+              const duration = endTime.getTime() - new Date(item.startTime).getTime();
+              return { ...item, status: 'completed' as const, endTime, duration };
+            }
+            return item;
+          });
+          
+          return { ...t, status, stageTimeline: newTimeline };
+        })
+      }));
+    },
+
+    addWarning: (warning) => {
+      get().addTimelineEvent(warning.taskId, {
+        type: 'warning_triggered',
+        title: `${warning.severity === 'critical' ? '严重' : warning.severity === 'warning' ? '警告' : '提示'}预警`,
+        description: warning.message,
+        timestamp: new Date(warning.timestamp),
+        data: { warningId: warning.id }
+      });
+
+      set((state) => ({
+        warnings: [warning, ...state.warnings],
+        tasks: state.tasks.map(t => 
+          t.id === warning.taskId 
+            ? { ...t, warnings: [...t.warnings, warning] }
+            : t
+        )
+      }));
+    },
+
+    updateWarning: (id, updates) => {
+      const state = get();
+      const warning = state.warnings.find(w => w.id === id);
       
-      return { ...t, status, stageTimeline: newTimeline };
-    })
-  })),
+      if (warning && updates.status === 'resolved') {
+        state.addTimelineEvent(warning.taskId, {
+          type: 'warning_resolved',
+          title: '预警已处理',
+          description: updates.resolution || '预警已复核处理',
+          data: { warningId: id }
+        });
+      }
+      
+      set((state) => {
+        const warning = state.warnings.find(w => w.id === id);
+        if (!warning) return state;
+        
+        return {
+          warnings: state.warnings.map(w => w.id === id ? { ...w, ...updates } : w),
+          tasks: state.tasks.map(t => 
+            t.id === warning.taskId
+              ? { ...t, warnings: t.warnings.map(w => w.id === id ? { ...w, ...updates } : w) }
+              : t
+          )
+        };
+      });
+    },
 
-  addWarning: (warning) => set((state) => ({
-    warnings: [warning, ...state.warnings],
-    tasks: state.tasks.map(t => 
-      t.id === warning.taskId 
-        ? { ...t, warnings: [...t.warnings, warning] }
-        : t
-    )
-  })),
+    addReport: (report) => set((state) => ({
+      reports: [report, ...state.reports]
+    })),
 
-  updateWarning: (id, updates) => set((state) => {
-    const warning = state.warnings.find(w => w.id === id);
-    if (!warning) return state;
-    
-    return {
-      warnings: state.warnings.map(w => w.id === id ? { ...w, ...updates } : w),
+    addExport: (exportTask) => set((state) => ({
+      exports: [exportTask, ...state.exports]
+    })),
+
+    updateExport: (id, updates) => set((state) => ({
+      exports: state.exports.map(e => e.id === id ? { ...e, ...updates } : e)
+    })),
+
+    getMonitoringData: (taskId, version) => {
+      const state = get();
+      if (version !== undefined) {
+        const versions = state.simulationVersions[taskId];
+        if (versions && versions[version]) {
+          return versions[version].monitoringData;
+        }
+      }
+      return state.monitoringData[taskId] || [];
+    },
+
+    addMonitoringData: (taskId, data) => {
+      set((state) => ({
+        monitoringData: {
+          ...state.monitoringData,
+          [taskId]: [...(state.monitoringData[taskId] || []), data]
+        }
+      }));
+    },
+
+    updateApprovalStatus: (taskId, status) => set((state) => ({
+      tasks: state.tasks.map(t => t.id === taskId ? { ...t, approvalStatus: status } : t)
+    })),
+
+    setIsLoading: (loading) => set({ isLoading: loading }),
+
+    startSimulation: (taskId) => {
+      const state = get();
+      if (state.activeEngines[taskId]) {
+        state.activeEngines[taskId].resume();
+        return;
+      }
+
+      const engine = new SimulationEngine(taskId);
+      set({ activeEngines: { ...get().activeEngines, [taskId]: engine } });
+      engine.startSimulation(taskId);
+    },
+
+    pauseSimulation: (taskId) => {
+      const engine = get().activeEngines[taskId];
+      if (engine) {
+        engine.pause();
+      }
+    },
+
+    resumeSimulation: (taskId) => {
+      const engine = get().activeEngines[taskId];
+      if (engine) {
+        engine.resume();
+      }
+    },
+
+    restartSimulation: (taskId) => {
+      const engine = get().activeEngines[taskId];
+      if (engine) {
+        engine.restart();
+      } else {
+        const newEngine = new SimulationEngine(taskId);
+        set({ activeEngines: { ...get().activeEngines, [taskId]: newEngine } });
+        newEngine.startSimulation(taskId);
+      }
+    },
+
+    stopSimulation: (taskId) => {
+      const engine = get().activeEngines[taskId];
+      if (engine) {
+        engine.destroy();
+        const newEngines = { ...get().activeEngines };
+        delete newEngines[taskId];
+        set({ activeEngines: newEngines });
+      }
+    },
+
+    addAdjustment: (taskId, adjustment) => set((state) => ({
       tasks: state.tasks.map(t => 
-        t.id === warning.taskId
-          ? { ...t, warnings: t.warnings.map(w => w.id === id ? { ...w, ...updates } : w) }
+        t.id === taskId 
+          ? { ...t, adjustments: [...t.adjustments, adjustment] }
           : t
       )
-    };
-  }),
+    })),
 
-  addReport: (report) => set((state) => ({
-    reports: [report, ...state.reports]
-  })),
+    reRunSimulationWithAdjustments: (taskId, warningId, adjustments) => {
+      const state = get();
+      const task = state.tasks.find(t => t.id === taskId);
+      const currentUser = state.currentUser;
+      
+      if (!task || !currentUser) return;
 
-  addExport: (exportTask) => set((state) => ({
-    exports: [exportTask, ...state.exports]
-  })),
+      const currentMonitoring = state.monitoringData[taskId] || [];
+      const currentNuclides = state.nuclideData[taskId] || [];
+      const currentVersions = state.simulationVersions[taskId] || [];
+      const newVersionNum = currentVersions.length;
 
-  updateExport: (id, updates) => set((state) => ({
-    exports: state.exports.map(e => e.id === id ? { ...e, ...updates } : e)
-  })),
+      const currentVersionData: SimulationVersion = {
+        version: newVersionNum - 1,
+        label: currentVersions.length === 1 ? '原始模拟' : `第${newVersionNum - 1}次重算`,
+        parameters: { ...task.parameters },
+        startedAt: task.startedAt || task.createdAt,
+        completedAt: task.completedAt,
+        status: task.status,
+        monitoringData: [...currentMonitoring],
+        nuclideData: [...currentNuclides],
+        ni56Yield: task.ni56Yield,
+        ge68Yield: task.ge68Yield
+      };
 
-  getMonitoringData: (taskId) => get().monitoringData[taskId] || [],
-
-  addMonitoringData: (taskId, data) => set((state) => ({
-    monitoringData: {
-      ...state.monitoringData,
-      [taskId]: [...(state.monitoringData[taskId] || []), data]
-    }
-  })),
-
-  updateApprovalStatus: (taskId, status) => set((state) => ({
-    tasks: state.tasks.map(t => t.id === taskId ? { ...t, approvalStatus: status } : t)
-  })),
-
-  setIsLoading: (loading) => set({ isLoading: loading }),
-
-  startSimulation: (taskId) => {
-    const state = get();
-    if (state.activeEngines[taskId]) {
-      state.activeEngines[taskId].resume();
-      return;
-    }
-
-    const engine = new SimulationEngine(taskId);
-    set({ activeEngines: { ...get().activeEngines, [taskId]: engine } });
-    engine.startSimulation(taskId);
-  },
-
-  pauseSimulation: (taskId) => {
-    const engine = get().activeEngines[taskId];
-    if (engine) {
-      engine.pause();
-    }
-  },
-
-  resumeSimulation: (taskId) => {
-    const engine = get().activeEngines[taskId];
-    if (engine) {
-      engine.resume();
-    }
-  },
-
-  restartSimulation: (taskId) => {
-    const engine = get().activeEngines[taskId];
-    if (engine) {
-      engine.restart();
-    } else {
-      const newEngine = new SimulationEngine(taskId);
-      set({ activeEngines: { ...get().activeEngines, [taskId]: newEngine } });
-      newEngine.startSimulation(taskId);
-    }
-  },
-
-  stopSimulation: (taskId) => {
-    const engine = get().activeEngines[taskId];
-    if (engine) {
-      engine.destroy();
-      const newEngines = { ...get().activeEngines };
-      delete newEngines[taskId];
-      set({ activeEngines: newEngines });
-    }
-  },
-
-  addAdjustment: (taskId, adjustment) => set((state) => ({
-    tasks: state.tasks.map(t => 
-      t.id === taskId 
-        ? { ...t, adjustments: [...t.adjustments, adjustment] }
-        : t
-    )
-  })),
-
-  reRunSimulationWithAdjustments: (taskId, warningId, adjustments) => {
-    const state = get();
-    const task = state.tasks.find(t => t.id === taskId);
-    const currentUser = state.currentUser;
-    
-    if (!task || !currentUser) return;
-
-    const adjustmentLog: AdjustmentLog = {
-      id: `adj-${genId()}`,
-      taskId,
-      warningId,
-      type: adjustments.type,
-      parameter: adjustments.parameter,
-      oldValue: adjustments.oldValue,
-      newValue: adjustments.newValue,
-      reason: adjustments.reason,
-      adjustedBy: currentUser.id,
-      adjustedAt: new Date(),
-      restartCount: task.adjustments.length + 1
-    };
-
-    let newParams = { ...task.parameters };
-    if (adjustments.type === 'equation_of_state') {
-      newParams.equationOfState = adjustments.newValue;
-    }
-
-    get().addAdjustment(taskId, adjustmentLog);
-    get().updateTask(taskId, {
-      parameters: newParams,
-      status: SimulationStatus.PENDING_VALIDATION,
-      progress: 0
-    });
-
-    get().updateWarning(warningId, {
-      status: 'resolved',
-      resolution: adjustments.reason,
-      reviewedBy: currentUser.id,
-      reviewedAt: new Date()
-    });
-
-    get().restartSimulation(taskId);
-  },
-
-  submitForApproval: (taskId) => {
-    get().updateApprovalStatus(taskId, ApprovalStatus.POSTDOC_PENDING);
-  },
-
-  approvePostdoc: (taskId, verification, comments) => {
-    const state = get();
-    const currentUser = state.currentUser;
-    if (!currentUser) return;
-
-    const record: ApprovalRecord = {
-      id: `appr-${genId()}`,
-      taskId,
-      level: 'postdoc',
-      approver: currentUser.id,
-      status: 'approved',
-      comments,
-      approvedAt: new Date(),
-      shockDynamicsVerification: verification
-    };
-
-    get().addApprovalRecord(taskId, record);
-    get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_PENDING);
-  },
-
-  rejectPostdoc: (taskId, comments) => {
-    const state = get();
-    const currentUser = state.currentUser;
-    if (!currentUser) return;
-
-    const record: ApprovalRecord = {
-      id: `appr-${genId()}`,
-      taskId,
-      level: 'postdoc',
-      approver: currentUser.id,
-      status: 'rejected',
-      comments,
-      approvedAt: new Date(),
-      shockDynamicsVerification: {
-        shockVelocityValid: false,
-        radiusEvolutionValid: false,
-        energyConservationValid: false,
-        comments
+      const newVersions = [...currentVersions];
+      if (newVersions.length > 0) {
+        newVersions[newVersions.length - 1] = currentVersionData;
       }
-    };
 
-    get().addApprovalRecord(taskId, record);
-    get().updateApprovalStatus(taskId, ApprovalStatus.POSTDOC_REJECTED);
-  },
+      const adjustmentLog: AdjustmentLog = {
+        id: `adj-${genId()}`,
+        taskId,
+        warningId,
+        type: adjustments.type,
+        parameter: adjustments.parameter,
+        oldValue: adjustments.oldValue,
+        newValue: adjustments.newValue,
+        reason: adjustments.reason,
+        adjustedBy: currentUser.id,
+        adjustedAt: new Date(),
+        restartCount: newVersionNum
+      };
 
-  approveProfessor: (taskId, assessment, comments) => {
-    const state = get();
-    const currentUser = state.currentUser;
-    if (!currentUser) return;
-
-    const record: ApprovalRecord = {
-      id: `appr-${genId()}`,
-      taskId,
-      level: 'professor',
-      approver: currentUser.id,
-      status: 'approved',
-      comments,
-      approvedAt: new Date(),
-      shockDynamicsVerification: {
-        shockVelocityValid: true,
-        radiusEvolutionValid: true,
-        energyConservationValid: true,
-        comments: '已通过博士后审核'
-      },
-      nucleosynthesisAssessment: assessment
-    };
-
-    get().addApprovalRecord(taskId, record);
-    get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_APPROVED);
-    get().pushToMultimessenger(taskId);
-  },
-
-  rejectProfessor: (taskId, comments) => {
-    const state = get();
-    const currentUser = state.currentUser;
-    if (!currentUser) return;
-
-    const record: ApprovalRecord = {
-      id: `appr-${genId()}`,
-      taskId,
-      level: 'professor',
-      approver: currentUser.id,
-      status: 'rejected',
-      comments,
-      approvedAt: new Date(),
-      shockDynamicsVerification: {
-        shockVelocityValid: false,
-        radiusEvolutionValid: false,
-        energyConservationValid: false,
-        comments: '教授审核驳回'
-      },
-      nucleosynthesisAssessment: {
-        ni56YieldValid: false,
-        abundanceDistributionValid: false,
-        observationMatch: 0,
-        comments
+      let newParams = { ...task.parameters };
+      if (adjustments.type === 'equation_of_state') {
+        newParams.equationOfState = adjustments.newValue;
+      } else if (adjustments.type === 'reaction_rate') {
+        newParams.reactionNetwork = adjustments.newValue;
       }
-    };
 
-    get().addApprovalRecord(taskId, record);
-    get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_REJECTED);
-  },
+      get().addAdjustment(taskId, adjustmentLog);
+      
+      get().addTimelineEvent(taskId, {
+        type: 'adjustment_made',
+        title: '参数调整',
+        description: `${adjustments.parameter}: ${adjustments.oldValue} → ${adjustments.newValue}，原因：${adjustments.reason}`
+      });
 
-  addApprovalRecord: (taskId, record) => set((state) => ({
-    tasks: state.tasks.map(t => 
-      t.id === taskId 
-        ? { ...t, approvalHistory: [...t.approvalHistory, record] }
-        : t
-    )
-  })),
+      get().addTimelineEvent(taskId, {
+        type: 'simulation_restarted',
+        title: `第${newVersionNum}次重算启动`,
+        description: `基于${adjustments.parameter.includes('状态方程') ? '状态方程' : '核反应网络'}调整重新启动模拟`
+      });
 
-  pushToMultimessenger: (taskId) => {
-    set((state) => ({
-      multimessengerPushed: {
-        ...state.multimessengerPushed,
-        [taskId]: true
+      get().updateTask(taskId, {
+        parameters: newParams,
+        status: SimulationStatus.PENDING_VALIDATION,
+        progress: 0,
+        startedAt: new Date(),
+        completedAt: null
+      });
+
+      get().updateWarning(warningId, {
+        status: 'resolved',
+        resolution: adjustments.reason,
+        reviewedBy: currentUser.id,
+        reviewedAt: new Date()
+      });
+
+      const newVersion: SimulationVersion = {
+        version: newVersionNum,
+        label: `第${newVersionNum}次重算`,
+        parameters: { ...newParams },
+        startedAt: new Date(),
+        completedAt: null,
+        status: SimulationStatus.PENDING_VALIDATION,
+        monitoringData: [],
+        nuclideData: [],
+        ni56Yield: undefined,
+        ge68Yield: undefined
+      };
+
+      set((state) => ({
+        simulationVersions: {
+          ...state.simulationVersions,
+          [taskId]: [...newVersions, newVersion]
+        },
+        currentVersion: {
+          ...state.currentVersion,
+          [taskId]: newVersionNum
+        },
+        monitoringData: {
+          ...state.monitoringData,
+          [taskId]: []
+        }
+      }));
+
+      get().restartSimulation(taskId);
+    },
+
+    getVersions: (taskId) => {
+      return get().simulationVersions[taskId] || [];
+    },
+
+    getCurrentVersion: (taskId) => {
+      return get().currentVersion[taskId] ?? 0;
+    },
+
+    setCurrentVersion: (taskId, version) => {
+      set((state) => ({
+        currentVersion: {
+          ...state.currentVersion,
+          [taskId]: version
+        }
+      }));
+    },
+
+    submitForApproval: (taskId) => {
+      get().updateApprovalStatus(taskId, ApprovalStatus.POSTDOC_PENDING);
+      get().addTimelineEvent(taskId, {
+        type: 'approval_submitted',
+        title: '提交审批',
+        description: '模拟结果已提交，等待博士后验证激波动力学'
+      });
+    },
+
+    approvePostdoc: (taskId, verification, comments) => {
+      const state = get();
+      const currentUser = state.currentUser;
+      if (!currentUser) return;
+
+      const record: ApprovalRecord = {
+        id: `appr-${genId()}`,
+        taskId,
+        level: 'postdoc',
+        approver: currentUser.id,
+        status: 'approved',
+        comments,
+        approvedAt: new Date(),
+        shockDynamicsVerification: verification
+      };
+
+      get().addApprovalRecord(taskId, record);
+      get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_PENDING);
+      get().addTimelineEvent(taskId, {
+        type: 'approval_postdoc',
+        title: '博士后审核通过',
+        description: `激波动力学验证通过，评论：${comments || '无'}`,
+        data: { approver: currentUser.name }
+      });
+    },
+
+    rejectPostdoc: (taskId, comments) => {
+      const state = get();
+      const currentUser = state.currentUser;
+      if (!currentUser) return;
+
+      const record: ApprovalRecord = {
+        id: `appr-${genId()}`,
+        taskId,
+        level: 'postdoc',
+        approver: currentUser.id,
+        status: 'rejected',
+        comments,
+        approvedAt: new Date(),
+        shockDynamicsVerification: {
+          shockVelocityValid: false,
+          radiusEvolutionValid: false,
+          energyConservationValid: false,
+          comments
+        }
+      };
+
+      get().addApprovalRecord(taskId, record);
+      get().updateApprovalStatus(taskId, ApprovalStatus.POSTDOC_REJECTED);
+      get().addTimelineEvent(taskId, {
+        type: 'approval_postdoc',
+        title: '博士后审核驳回',
+        description: comments || '需要修改'
+      });
+    },
+
+    approveProfessor: (taskId, assessment, comments) => {
+      const state = get();
+      const currentUser = state.currentUser;
+      if (!currentUser) return;
+
+      const record: ApprovalRecord = {
+        id: `appr-${genId()}`,
+        taskId,
+        level: 'professor',
+        approver: currentUser.id,
+        status: 'approved',
+        comments,
+        approvedAt: new Date(),
+        shockDynamicsVerification: {
+          shockVelocityValid: true,
+          radiusEvolutionValid: true,
+          energyConservationValid: true,
+          comments: '已通过博士后审核'
+        },
+        nucleosynthesisAssessment: assessment
+      };
+
+      get().addApprovalRecord(taskId, record);
+      get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_APPROVED);
+      get().addTimelineEvent(taskId, {
+        type: 'approval_professor',
+        title: '教授审核通过',
+        description: `核合成评估通过，观测匹配度：${assessment.observationMatch}%`,
+        data: { approver: currentUser.name }
+      });
+      get().pushToMultimessenger(taskId);
+    },
+
+    rejectProfessor: (taskId, comments) => {
+      const state = get();
+      const currentUser = state.currentUser;
+      if (!currentUser) return;
+
+      const record: ApprovalRecord = {
+        id: `appr-${genId()}`,
+        taskId,
+        level: 'professor',
+        approver: currentUser.id,
+        status: 'rejected',
+        comments,
+        approvedAt: new Date(),
+        shockDynamicsVerification: {
+          shockVelocityValid: false,
+          radiusEvolutionValid: false,
+          energyConservationValid: false,
+          comments: '教授审核驳回'
+        },
+        nucleosynthesisAssessment: {
+          ni56YieldValid: false,
+          abundanceDistributionValid: false,
+          observationMatch: 0,
+          comments
+        }
+      };
+
+      get().addApprovalRecord(taskId, record);
+      get().updateApprovalStatus(taskId, ApprovalStatus.PROFESSOR_REJECTED);
+      get().addTimelineEvent(taskId, {
+        type: 'approval_professor',
+        title: '教授审核驳回',
+        description: comments || '需要修改'
+      });
+    },
+
+    addApprovalRecord: (taskId, record) => set((state) => ({
+      tasks: state.tasks.map(t => 
+        t.id === taskId 
+          ? { ...t, approvalHistory: [...t.approvalHistory, record] }
+          : t
+      )
+    })),
+
+    pushToMultimessenger: (taskId) => {
+      set((state) => ({
+        multimessengerPushed: {
+          ...state.multimessengerPushed,
+          [taskId]: true
+        }
+      }));
+      get().addTimelineEvent(taskId, {
+        type: 'multimessenger_pushed',
+        title: '已推送到多信使观测提案系统',
+        description: `提案编号: MMS-${taskId.toUpperCase().replace(/-/g, '')}`
+      });
+    },
+
+    checkNi56Deviation: (progenitorMass) => {
+      const state = get();
+      const completedTasks = state.tasks.filter(t => 
+        t.status === SimulationStatus.COMPLETED &&
+        t.parameters.mass === progenitorMass &&
+        t.ni56Yield !== undefined
+      ).slice(0, 3);
+
+      const ni56Yields = completedTasks.map(t => t.ni56Yield!);
+      
+      if (ni56Yields.length < 3) {
+        return { hasDeviation: false, lastThree: ni56Yields };
       }
-    }));
-  },
 
-  checkNi56Deviation: (progenitorMass) => {
-    const state = get();
-    const completedTasks = state.tasks.filter(t => 
-      t.status === SimulationStatus.COMPLETED &&
-      t.parameters.mass === progenitorMass &&
-      t.ni56Yield !== undefined
-    ).slice(0, 3);
+      const avg = ni56Yields.reduce((a, b) => a + b, 0) / ni56Yields.length;
+      const maxDeviation = Math.max(...ni56Yields.map(y => Math.abs(y - avg) / avg * 100));
+      
+      return {
+        hasDeviation: maxDeviation > 20,
+        lastThree: ni56Yields
+      };
+    },
 
-    const ni56Yields = completedTasks.map(t => t.ni56Yield!);
-    
-    if (ni56Yields.length < 3) {
-      return { hasDeviation: false, lastThree: ni56Yields };
+    addTimelineEvent: (taskId, event) => {
+      const newEvent: TimelineEvent = {
+        id: `evt-${genId()}`,
+        taskId,
+        timestamp: event.timestamp || new Date(),
+        ...event
+      };
+
+      set((state) => ({
+        timelineEvents: {
+          ...state.timelineEvents,
+          [taskId]: [...(state.timelineEvents[taskId] || []), newEvent]
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+        }
+      }));
+    },
+
+    getTimelineEvents: (taskId) => {
+      return get().timelineEvents[taskId] || [];
     }
-
-    const avg = ni56Yields.reduce((a, b) => a + b, 0) / ni56Yields.length;
-    const maxDeviation = Math.max(...ni56Yields.map(y => Math.abs(y - avg) / avg * 100));
-    
-    return {
-      hasDeviation: maxDeviation > 20,
-      lastThree: ni56Yields
-    };
-  }
-}));
+  };
+});

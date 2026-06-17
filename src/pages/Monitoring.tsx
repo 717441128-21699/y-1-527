@@ -2,10 +2,10 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Play, Pause, Maximize2, Download, ChevronDown, XCircle, AlertTriangle, Info, CheckCircle2 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
-import { MonitoringDataPoint, Warning } from '@/types';
+import { MonitoringDataPoint, Warning, SimulationVersion } from '@/types';
 import { cn } from '@/lib/utils';
 
-type TabType = 'shock' | 'neutrino' | 'nuclide';
+type TabType = 'shock' | 'neutrino' | 'nuclide' | 'compare';
 
 const tabColors = {
   shock: { main: '#2f59b5', light: '#4e72bf', series: ['#2f59b5', '#4e72bf', '#6d8cca', '#97add9', '#1e40af'] },
@@ -16,15 +16,24 @@ const tabColors = {
 const severityOrder = { critical: 0, warning: 1, info: 2 };
 const severityIcon = { critical: <XCircle className="w-4 h-4 text-red-400" />, warning: <AlertTriangle className="w-4 h-4 text-supernova-400" />, info: <Info className="w-4 h-4 text-space-400" /> };
 const taskColors = ['#2f59b5', '#7c3aed', '#10b981', '#eab308', '#f97316', '#ec4899'];
+const versionColors = ['#2f59b5', '#10b981', '#f97316', '#7c3aed', '#ec4899', '#eab308', '#06b6d4', '#84cc16'];
 
 export default function Monitoring() {
-  const { tasks, warnings, monitoringData } = useStore();
+  const { tasks, warnings, monitoringData, getVersions, getMonitoringData } = useStore();
   const [activeTab, setActiveTab] = useState<TabType>('shock');
   const [selectedTasks, setSelectedTasks] = useState<string[]>(['task-001', 'task-002']);
   const [timeRange, setTimeRange] = useState<[number, number]>([0, 1000]);
   const [isRefreshing, setIsRefreshing] = useState(true);
   const [showTaskDropdown, setShowTaskDropdown] = useState(false);
   const chartRef = useRef<ReactECharts>(null);
+
+  const [compareTaskId, setCompareTaskId] = useState<string>('task-001');
+  const [selectedVersions, setSelectedVersions] = useState<number[]>([0]);
+  const [showCompareTaskDropdown, setShowCompareTaskDropdown] = useState(false);
+  const [compareTimeRange, setCompareTimeRange] = useState<[number, number]>([0, 1000]);
+  const shockChartRef = useRef<ReactECharts>(null);
+  const neutrinoChartRef = useRef<ReactECharts>(null);
+  const ni56ChartRef = useRef<ReactECharts>(null);
 
   useEffect(() => {
     if (!isRefreshing) return;
@@ -108,6 +117,98 @@ export default function Monitoring() {
     ])
   });
 
+  const versions: SimulationVersion[] = useMemo(() => getVersions(compareTaskId), [compareTaskId, getVersions]);
+
+  const compareData = useMemo(() => {
+    const result: Record<number, MonitoringDataPoint[]> = {};
+    selectedVersions.forEach(versionNum => {
+      const data = getMonitoringData(compareTaskId, versionNum) || [];
+      result[versionNum] = data.filter(d => d.timestamp >= compareTimeRange[0] && d.timestamp <= compareTimeRange[1]);
+    });
+    return result;
+  }, [compareTaskId, selectedVersions, compareTimeRange, getMonitoringData]);
+
+  const toggleVersion = (versionNum: number) => {
+    setSelectedVersions(prev =>
+      prev.includes(versionNum)
+        ? prev.filter(v => v !== versionNum)
+        : [...prev, versionNum]
+    );
+  };
+
+  const getCompareShockOption = () => {
+    const firstVersion = selectedVersions[0];
+    const xData = compareData[firstVersion]?.map(d => d.timestamp) || [];
+    return {
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(6, 15, 36, 0.95)', borderColor: '#2f59b5', textStyle: { color: '#fff' } },
+      legend: { textStyle: { color: '#c0cee8' }, top: 0 },
+      grid: { left: '3%', right: '4%', bottom: '3%', top: '12%', containLabel: true },
+      xAxis: { type: 'category', name: '时间 (ms)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#2f59b5' } }, axisLabel: { color: '#6d8cca' }, data: xData },
+      yAxis: { type: 'value', name: '激波半径 (km)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#2f59b5' } }, axisLabel: { color: '#6d8cca' }, splitLine: { lineStyle: { color: 'rgba(47, 89, 181, 0.2)' } } },
+      series: selectedVersions.map((versionNum, idx) => {
+        const version = versions.find(v => v.version === versionNum);
+        return {
+          name: version?.label || `版本${versionNum}`,
+          type: 'line',
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 2, color: versionColors[idx % versionColors.length] },
+          itemStyle: { color: versionColors[idx % versionColors.length] },
+          data: compareData[versionNum]?.map(d => d.shockRadius) || []
+        };
+      })
+    };
+  };
+
+  const getCompareNeutrinoOption = () => {
+    const firstVersion = selectedVersions[0];
+    const xData = compareData[firstVersion]?.map(d => d.timestamp) || [];
+    return {
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(6, 15, 36, 0.95)', borderColor: '#7c3aed', textStyle: { color: '#fff' } },
+      legend: { textStyle: { color: '#c0cee8' }, top: 0 },
+      grid: { left: '3%', right: '4%', bottom: '3%', top: '12%', containLabel: true },
+      xAxis: { type: 'category', name: '时间 (ms)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#7c3aed' } }, axisLabel: { color: '#6d8cca' }, data: xData },
+      yAxis: { type: 'log', name: '光度 (erg/s)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#7c3aed' } }, axisLabel: { color: '#6d8cca' }, splitLine: { lineStyle: { color: 'rgba(124, 58, 237, 0.2)' } } },
+      series: selectedVersions.flatMap((versionNum, idx) => {
+        const version = versions.find(v => v.version === versionNum);
+        const label = version?.label || `版本${versionNum}`;
+        const color = versionColors[idx % versionColors.length];
+        return [
+          { name: `ν_e - ${label}`, type: 'line', smooth: true, showSymbol: false, lineStyle: { width: 2, color }, itemStyle: { color }, data: compareData[versionNum]?.map(d => d.nu_e_luminosity) || [] },
+          { name: `ν̄_e - ${label}`, type: 'line', smooth: true, showSymbol: false, lineStyle: { width: 2, color, type: 'dashed' }, itemStyle: { color }, data: compareData[versionNum]?.map(d => d.nu_ebar_luminosity) || [] },
+          { name: `ν_x - ${label}`, type: 'line', smooth: true, showSymbol: false, lineStyle: { width: 2, color, type: 'dotted' }, itemStyle: { color }, data: compareData[versionNum]?.map(d => d.nu_x_luminosity) || [] }
+        ];
+      })
+    };
+  };
+
+  const getCompareNi56Option = () => {
+    const firstVersion = selectedVersions[0];
+    const xData = compareData[firstVersion]?.map(d => d.timestamp) || [];
+    return {
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(6, 15, 36, 0.95)', borderColor: '#10b981', textStyle: { color: '#fff' } },
+      legend: { textStyle: { color: '#c0cee8' }, top: 0 },
+      grid: { left: '3%', right: '4%', bottom: '3%', top: '12%', containLabel: true },
+      xAxis: { type: 'category', name: '时间 (ms)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#10b981' } }, axisLabel: { color: '#6d8cca' }, data: xData },
+      yAxis: { type: 'value', name: 'Ni-56 产额 (M☉)', nameTextStyle: { color: '#97add9' }, axisLine: { lineStyle: { color: '#10b981' } }, axisLabel: { color: '#6d8cca' }, splitLine: { lineStyle: { color: 'rgba(16, 185, 129, 0.2)' } } },
+      series: selectedVersions.map((versionNum, idx) => {
+        const version = versions.find(v => v.version === versionNum);
+        return {
+          name: version?.label || `版本${versionNum}`,
+          type: 'line',
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 2, color: versionColors[idx % versionColors.length] },
+          itemStyle: { color: versionColors[idx % versionColors.length] },
+          data: compareData[versionNum]?.map(d => d.ni56_mass) || []
+        };
+      })
+    };
+  };
+
   const handleFullscreen = () => {
     const instance = chartRef.current?.getEchartsInstance();
     if (instance) {
@@ -142,7 +243,7 @@ export default function Monitoring() {
     setSelectedTasks(prev => prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId]);
   };
 
-  const chartOptions: Record<TabType, any> = {
+  const chartOptions: Record<Exclude<TabType, 'compare'>, any> = {
     shock: getShockOption(),
     neutrino: getNeutrinoOption(),
     nuclide: getNuclideOption()
@@ -165,48 +266,108 @@ export default function Monitoring() {
             </div>
 
             <div className="flex gap-2 bg-space-900/50 p-1 rounded-lg w-fit">
-              {[{ key: 'shock', label: '激波监控' }, { key: 'neutrino', label: '中微子监控' }, { key: 'nuclide', label: '核合成监控' }].map(tab => (
+              {[{ key: 'shock', label: '激波监控' }, { key: 'neutrino', label: '中微子监控' }, { key: 'nuclide', label: '核合成监控' }, { key: 'compare', label: '重算对比' }].map(tab => (
                 <button key={tab.key} onClick={() => setActiveTab(tab.key as TabType)} className={cn('px-4 py-2 rounded-md text-sm font-medium transition-all', activeTab === tab.key ? 'bg-gradient-to-r from-space-600 to-space-500 text-white shadow-glow-blue' : 'text-space-300 hover:text-white hover:bg-space-800/50')}>
                   {tab.label}
                 </button>
               ))}
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative">
-                <button onClick={() => setShowTaskDropdown(!showTaskDropdown)} className="flex items-center gap-2 px-4 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 hover:border-space-500/50 transition-all">
-                  <span>任务 ({selectedTasks.length})</span>
-                  <ChevronDown className="w-4 h-4" />
-                </button>
-                {showTaskDropdown && (
-                  <div className="absolute top-full left-0 mt-2 w-64 bg-space-900 border border-space-600/30 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
-                    {tasks.filter(t => monitoringData[t.id]).map(task => (
-                      <label key={task.id} className="flex items-center gap-2 px-3 py-2 hover:bg-space-800/50 cursor-pointer">
-                        <input type="checkbox" checked={selectedTasks.includes(task.id)} onChange={() => toggleTask(task.id)} className="rounded border-space-500 bg-space-800 text-space-500" />
-                        <span className="text-space-200 text-sm truncate">{task.name}</span>
-                      </label>
-                    ))}
+            {activeTab !== 'compare' ? (
+              <>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative">
+                    <button onClick={() => setShowTaskDropdown(!showTaskDropdown)} className="flex items-center gap-2 px-4 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 hover:border-space-500/50 transition-all">
+                      <span>任务 ({selectedTasks.length})</span>
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                    {showTaskDropdown && (
+                      <div className="absolute top-full left-0 mt-2 w-64 bg-space-900 border border-space-600/30 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                        {tasks.filter(t => monitoringData[t.id]).map(task => (
+                          <label key={task.id} className="flex items-center gap-2 px-3 py-2 hover:bg-space-800/50 cursor-pointer">
+                            <input type="checkbox" checked={selectedTasks.includes(task.id)} onChange={() => toggleTask(task.id)} className="rounded border-space-500 bg-space-800 text-space-500" />
+                            <span className="text-space-200 text-sm truncate">{task.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <input type="number" value={timeRange[0]} onChange={e => setTimeRange([parseFloat(e.target.value) || 0, timeRange[1]])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="开始" />
-                <span className="text-space-400">-</span>
-                <input type="number" value={timeRange[1]} onChange={e => setTimeRange([timeRange[0], parseFloat(e.target.value) || 1000])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="结束" />
-              </div>
-              <div className="flex-1" />
-              <button onClick={handleFullscreen} className="p-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-300 hover:text-white hover:border-space-500/50 transition-all" title="全屏查看">
-                <Maximize2 className="w-4 h-4" />
-              </button>
-              <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-space-700 text-space-100 rounded-lg hover:bg-space-600 transition-all">
-                <Download className="w-4 h-4" />
-                导出
-              </button>
-            </div>
+                  <div className="flex items-center gap-2">
+                    <input type="number" value={timeRange[0]} onChange={e => setTimeRange([parseFloat(e.target.value) || 0, timeRange[1]])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="开始" />
+                    <span className="text-space-400">-</span>
+                    <input type="number" value={timeRange[1]} onChange={e => setTimeRange([timeRange[0], parseFloat(e.target.value) || 1000])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="结束" />
+                  </div>
+                  <div className="flex-1" />
+                  <button onClick={handleFullscreen} className="p-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-300 hover:text-white hover:border-space-500/50 transition-all" title="全屏查看">
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-space-700 text-space-100 rounded-lg hover:bg-space-600 transition-all">
+                    <Download className="w-4 h-4" />
+                    导出
+                  </button>
+                </div>
 
-            <div className="card p-4">
-              <ReactECharts ref={chartRef} option={chartOptions[activeTab]} style={{ height: '480px' }} theme="dark" />
-            </div>
+                <div className="card p-4">
+                  <ReactECharts ref={chartRef} option={chartOptions[activeTab]} style={{ height: '480px' }} theme="dark" />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative">
+                    <button onClick={() => setShowCompareTaskDropdown(!showCompareTaskDropdown)} className="flex items-center gap-2 px-4 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 hover:border-space-500/50 transition-all">
+                      <span>{tasks.find(t => t.id === compareTaskId)?.name || '选择任务'}</span>
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                    {showCompareTaskDropdown && (
+                      <div className="absolute top-full left-0 mt-2 w-64 bg-space-900 border border-space-600/30 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                        {tasks.filter(t => getVersions(t.id).length > 0).map(task => (
+                          <div key={task.id} onClick={() => { setCompareTaskId(task.id); setSelectedVersions([0]); setShowCompareTaskDropdown(false); }} className="px-3 py-2 hover:bg-space-800/50 cursor-pointer">
+                            <span className="text-space-200 text-sm truncate">{task.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-space-400 text-sm">版本:</span>
+                    <div className="flex flex-wrap gap-2">
+                      {versions.map((version, idx) => (
+                        <label key={version.version} className="flex items-center gap-1 px-2 py-1 bg-space-800/50 border border-space-600/30 rounded-md cursor-pointer hover:border-space-500/50 transition-all">
+                          <input
+                            type="checkbox"
+                            checked={selectedVersions.includes(version.version)}
+                            onChange={() => toggleVersion(version.version)}
+                            className="rounded border-space-500 bg-space-800 text-space-500"
+                          />
+                          <span className="text-space-200 text-xs" style={{ color: versionColors[idx % versionColors.length] }}>{version.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input type="number" value={compareTimeRange[0]} onChange={e => setCompareTimeRange([parseFloat(e.target.value) || 0, compareTimeRange[1]])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="开始" />
+                    <span className="text-space-400">-</span>
+                    <input type="number" value={compareTimeRange[1]} onChange={e => setCompareTimeRange([compareTimeRange[0], parseFloat(e.target.value) || 1000])} className="w-24 px-3 py-2 bg-space-800/50 border border-space-600/30 rounded-lg text-space-200 text-sm font-mono" placeholder="结束" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="card p-4">
+                    <h3 className="text-sm font-semibold text-space-200 mb-2">激波半径对比</h3>
+                    <ReactECharts ref={shockChartRef} option={getCompareShockOption()} style={{ height: '320px' }} theme="dark" />
+                  </div>
+                  <div className="card p-4">
+                    <h3 className="text-sm font-semibold text-space-200 mb-2">中微子光度对比</h3>
+                    <ReactECharts ref={neutrinoChartRef} option={getCompareNeutrinoOption()} style={{ height: '320px' }} theme="dark" />
+                  </div>
+                  <div className="card p-4 lg:col-span-2">
+                    <h3 className="text-sm font-semibold text-space-200 mb-2">Ni-56 产额对比</h3>
+                    <ReactECharts ref={ni56ChartRef} option={getCompareNi56Option()} style={{ height: '320px' }} theme="dark" />
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="w-full md:w-80 space-y-4">

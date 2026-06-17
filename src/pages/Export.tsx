@@ -55,7 +55,7 @@ const previewData = [
 ];
 
 export default function Export() {
-  const { exports, tasks, addExport, updateExport, getMonitoringData } = useStore();
+  const { exports, tasks, addExport, updateExport, getMonitoringData, getVersions } = useStore();
   const completedTasks = tasks.filter(t => t.status === SimulationStatus.COMPLETED);
 
   const [dataType, setDataType] = useState<string>('hydrodynamics');
@@ -65,7 +65,12 @@ export default function Export() {
   const [timeEnd, setTimeEnd] = useState<number>(1000);
   const [format, setFormat] = useState<string>('csv');
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [showPreview, setShowPreview] = useState<boolean>(false);
+
+  const currentTaskVersions = selectedTasks.length === 1 
+    ? getVersions(selectedTasks[0]) 
+    : [];
 
   useEffect(() => {
     const intervals: Record<string, number> = {};
@@ -100,8 +105,14 @@ export default function Export() {
     };
   }, [exports, updateExport]);
 
-  const generateDownloadUrl = (exp: ExportTask): string => {
-    const monitoringData = getMonitoringData(exp.taskId);
+  const generateDownloadUrl = (exp: ExportTask & { version?: number | null }): string => {
+    const versionNum = exp.version ?? undefined;
+    const monitoringData = getMonitoringData(exp.taskId, versionNum);
+    const versions = getVersions(exp.taskId);
+    const versionInfo = versionNum !== undefined && versions[versionNum] 
+      ? versions[versionNum] 
+      : versions.length > 0 ? versions[versions.length - 1] : null;
+    
     const filteredData = monitoringData.filter(d => 
       d.timestamp >= exp.timeWindow.start && d.timestamp <= exp.timeWindow.end
     );
@@ -111,10 +122,20 @@ export default function Export() {
 
     if (exp.format === 'csv') {
       mimeType = 'text/csv;charset=utf-8';
+      const versionLabel = versionInfo ? versionInfo.label : '最新版本';
+      const versionNumber = versionInfo ? versionInfo.version : (versions.length > 0 ? versions[versions.length - 1].version : 0);
+      
+      content += `# Export Version: v${versionNumber} (${versionLabel})\n`;
+      content += `# Task ID: ${exp.taskId}\n`;
+      content += `# Export Type: ${exp.exportType}\n`;
+      content += `# Time Window: ${exp.timeWindow.start} - ${exp.timeWindow.end} ms\n`;
+      content += `# Generated At: ${new Date().toISOString()}\n`;
+      content += '\n';
+      
       const headers = ['timestamp', 'shock_radius', 'shock_velocity', 'nu_e_luminosity', 
                        'nu_ebar_luminosity', 'nu_x_luminosity', 'ni56_mass', 'ge68_mass', 
                        'total_energy', 'entropy'];
-      content = headers.join(',') + '\n';
+      content += headers.join(',') + '\n';
       
       filteredData.forEach(d => {
         const row = [
@@ -133,13 +154,20 @@ export default function Export() {
       });
     } else if (exp.format === 'fits' || exp.format === 'hdf5') {
       mimeType = 'application/json';
+      const versionNumber = versionInfo ? versionInfo.version : (versions.length > 0 ? versions[versions.length - 1].version : 0);
+      const versionLabel = versionInfo ? versionInfo.label : '最新版本';
+      
       const data = {
         export_info: {
           task_id: exp.taskId,
           export_type: exp.exportType,
           format: exp.format,
           time_window: exp.timeWindow,
-          generated_at: new Date().toISOString()
+          generated_at: new Date().toISOString(),
+          version: {
+            number: versionNumber,
+            label: versionLabel
+          }
         },
         data_points: filteredData.map(d => ({
           timestamp: d.timestamp,
@@ -162,7 +190,11 @@ export default function Export() {
   };
 
   const handleTaskToggle = (taskId: string) => {
-    setSelectedTasks(prev => prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId]);
+    setSelectedTasks(prev => {
+      const newSelected = prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId];
+      setSelectedVersion(null);
+      return newSelected;
+    });
   };
 
   const handleExport = () => {
@@ -170,7 +202,7 @@ export default function Export() {
 
     selectedTasks.forEach(taskId => {
       const task = tasks.find(t => t.id === taskId);
-      const newExport: ExportTask = {
+      const newExport = {
         id: `export-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         taskId,
         exportType: dataType as any,
@@ -180,19 +212,33 @@ export default function Export() {
         format: format as any,
         status: 'pending',
         createdAt: new Date(),
-        downloadUrl: ''
-      };
+        downloadUrl: '',
+        version: selectedVersion
+      } as ExportTask & { version?: number | null };
       addExport(newExport);
     });
 
     setSelectedTasks([]);
+    setSelectedVersion(null);
   };
 
-  const handleDownload = (exp: ExportTask) => {
+  const handleDownload = (exp: ExportTask & { version?: number | null }) => {
     if (exp.status !== 'completed' || !exp.downloadUrl) return;
     
     const task = tasks.find(t => t.id === exp.taskId);
-    const fileName = `${task?.name || exp.taskId}_${exp.exportType}_${exp.timeWindow.start}-${exp.timeWindow.end}ms.${exp.format}`;
+    const versions = getVersions(exp.taskId);
+    let versionNumber: number;
+    
+    if (exp.version !== undefined && exp.version !== null) {
+      versionNumber = exp.version;
+    } else if (versions.length > 0) {
+      versionNumber = versions[versions.length - 1].version;
+    } else {
+      versionNumber = 0;
+    }
+    
+    const taskName = task?.name || exp.taskId;
+    const fileName = `${taskName}_v${versionNumber}_${exp.timeWindow.start}-${exp.timeWindow.end}ms.${exp.format}`;
     
     const a = document.createElement('a');
     a.href = exp.downloadUrl;
@@ -276,6 +322,34 @@ export default function Export() {
               </div>
 
               <div>
+                <label className="block text-space-300 text-sm mb-2">版本选择</label>
+                <select 
+                  value={selectedVersion ?? ''} 
+                  onChange={(e) => setSelectedVersion(e.target.value === '' ? null : parseInt(e.target.value))} 
+                  className="input-field"
+                  disabled={selectedTasks.length !== 1}
+                >
+                  {selectedTasks.length !== 1 ? (
+                    <option value="">请先选择单个任务</option>
+                  ) : currentTaskVersions.length === 0 ? (
+                    <option value="">暂无版本</option>
+                  ) : (
+                    <>
+                      <option value="">最新版本</option>
+                      {currentTaskVersions.map((v, idx) => (
+                        <option key={v.version} value={v.version}>
+                          {idx === currentTaskVersions.length - 1 ? '最新 - ' : ''}{v.label} (v{v.version})
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+                {selectedTasks.length !== 1 && (
+                  <p className="text-space-500 text-xs mt-1">版本选择仅在选中单个任务时可用</p>
+                )}
+              </div>
+
+              <div>
                 <label className="block text-space-300 text-sm mb-2">选择任务 ({selectedTasks.length} 已选)</label>
                 <div className="max-h-40 overflow-y-auto space-y-1 scrollbar-thin">
                   {completedTasks.length === 0 ? (
@@ -307,6 +381,7 @@ export default function Export() {
                     <tr className="border-b border-space-700">
                       <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">任务ID</th>
                       <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">导出类型</th>
+                      <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">版本</th>
                       <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">格式</th>
                       <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">状态</th>
                       <th className="text-left py-3 px-2 text-space-400 text-sm font-medium">创建时间</th>
@@ -315,34 +390,54 @@ export default function Export() {
                   </thead>
                   <tbody>
                     {exports.length === 0 ? (
-                      <tr><td colSpan={6} className="text-center py-8 text-space-500">暂无导出任务</td></tr>
+                      <tr><td colSpan={7} className="text-center py-8 text-space-500">暂无导出任务</td></tr>
                     ) : (
-                      exports.map(exp => (
-                        <motion.tr key={exp.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="border-b border-space-700/30 hover:bg-space-700/20 transition-colors">
-                          <td className="py-3 px-2 font-mono text-sm text-space-300">{exp.id.slice(-8)}</td>
-                          <td className="py-3 px-2 text-space-200 text-sm">{dataTypeOptions.find(o => o.value === exp.exportType)?.label || exp.exportType}</td>
-                          <td className="py-3 px-2"><span className="px-2 py-1 bg-space-700/50 rounded text-xs text-space-300 uppercase">{exp.format}</span></td>
-                          <td className="py-3 px-2">
-                            <div className="space-y-1">
-                              <span className={cn('status-badge flex items-center gap-1', statusMap[exp.status].cls)}>
-                                {(() => { const Icon = statusMap[exp.status].icon; return <Icon className="w-3 h-3" />; })()}
-                                {statusMap[exp.status].label}
+                      exports.map((exp: ExportTask & { version?: number | null }) => {
+                        const versions = getVersions(exp.taskId);
+                        let versionLabel = '最新版本';
+                        let versionNum = 0;
+                        
+                        if (exp.version !== undefined && exp.version !== null) {
+                          versionNum = exp.version;
+                          const v = versions.find(v => v.version === exp.version);
+                          versionLabel = v ? v.label : `v${exp.version}`;
+                        } else if (versions.length > 0) {
+                          versionNum = versions[versions.length - 1].version;
+                          versionLabel = versions[versions.length - 1].label;
+                        }
+                        
+                        return (
+                          <motion.tr key={exp.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="border-b border-space-700/30 hover:bg-space-700/20 transition-colors">
+                            <td className="py-3 px-2 font-mono text-sm text-space-300">{exp.id.slice(-8)}</td>
+                            <td className="py-3 px-2 text-space-200 text-sm">{dataTypeOptions.find(o => o.value === exp.exportType)?.label || exp.exportType}</td>
+                            <td className="py-3 px-2">
+                              <span className="px-2 py-1 bg-neutrino-500/20 text-neutrino-400 rounded text-xs" title={versionLabel}>
+                                v{versionNum}
                               </span>
-                              {exp.status === 'processing' && (
-                                <div className="progress-bar"><div className="progress-fill animate-pulse" style={{ width: '65%' }} /></div>
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-3 px-2 text-space-400 text-xs">{formatDateTime(exp.createdAt)}</td>
-                          <td className="py-3 px-2">
-                            <div className="flex gap-1">
-                              {exp.status === 'completed' && <button onClick={() => handleDownload(exp)} className="p-1.5 rounded-lg text-nickel-400 hover:bg-nickel-500/20 transition-colors" title="下载文件"><Download className="w-4 h-4" /></button>}
-                              {exp.status === 'processing' && <button className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"><X className="w-4 h-4" /></button>}
-                              {exp.status === 'failed' && <button className="p-1.5 rounded-lg text-supernova-400 hover:bg-supernova-500/20 transition-colors"><RefreshCw className="w-4 h-4" /></button>}
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))
+                            </td>
+                            <td className="py-3 px-2"><span className="px-2 py-1 bg-space-700/50 rounded text-xs text-space-300 uppercase">{exp.format}</span></td>
+                            <td className="py-3 px-2">
+                              <div className="space-y-1">
+                                <span className={cn('status-badge flex items-center gap-1', statusMap[exp.status].cls)}>
+                                  {(() => { const Icon = statusMap[exp.status].icon; return <Icon className="w-3 h-3" />; })()}
+                                  {statusMap[exp.status].label}
+                                </span>
+                                {exp.status === 'processing' && (
+                                  <div className="progress-bar"><div className="progress-fill animate-pulse" style={{ width: '65%' }} /></div>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 px-2 text-space-400 text-xs">{formatDateTime(exp.createdAt)}</td>
+                            <td className="py-3 px-2">
+                              <div className="flex gap-1">
+                                {exp.status === 'completed' && <button onClick={() => handleDownload(exp)} className="p-1.5 rounded-lg text-nickel-400 hover:bg-nickel-500/20 transition-colors" title="下载文件"><Download className="w-4 h-4" /></button>}
+                                {exp.status === 'processing' && <button className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"><X className="w-4 h-4" /></button>}
+                                {exp.status === 'failed' && <button className="p-1.5 rounded-lg text-supernova-400 hover:bg-supernova-500/20 transition-colors"><RefreshCw className="w-4 h-4" /></button>}
+                              </div>
+                            </td>
+                          </motion.tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

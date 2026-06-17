@@ -4,7 +4,9 @@ import {
   Play, Pause, RotateCcw, Download, Settings, ArrowLeft,
   Flame, Atom, Wind, Database, Zap, Target,
   CheckCircle2, Circle, Loader2, AlertTriangle, XCircle, Activity, Clock,
-  BarChart3, FileText, Radio, CheckSquare
+  BarChart3, FileText, Radio, CheckSquare,
+  User, Award, Send, CheckCircle,
+  type LucideIcon
 } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { useStore } from '@/store/useStore';
@@ -28,6 +30,19 @@ const stageLabels: Record<string, string> = { [SimulationStatus.PENDING_VALIDATI
 const stageIcons = [SimulationStatus.PENDING_VALIDATION, SimulationStatus.GRID_GENERATION, SimulationStatus.COLLAPSE_PHASE, SimulationStatus.SHOCK_BOUNCE, SimulationStatus.NUCLEOSYNTHESIS, SimulationStatus.COMPLETED];
 type TabKey = 'overview' | 'monitoring' | 'logs' | 'nucleosynthesis' | 'approval';
 const tabConfig = [{ key: 'overview', label: '概览', icon: BarChart3 }, { key: 'monitoring', label: '实时监控', icon: Activity }, { key: 'logs', label: '模拟日志', icon: FileText }, { key: 'nucleosynthesis', label: '核合成结果', icon: Radio }, { key: 'approval', label: '审批流程', icon: CheckSquare }];
+
+const timelineEventConfig: Record<string, { icon: LucideIcon; color: string; bgColor: string; borderColor: string; accentColor: string }> = {
+  task_created: { icon: Atom, color: 'text-space-400', bgColor: 'bg-space-500/20', borderColor: 'border-space-500/50', accentColor: 'bg-space-500/60' },
+  stage_change: { icon: Activity, color: 'text-nickel-400', bgColor: 'bg-nickel-500/20', borderColor: 'border-nickel-500/50', accentColor: 'bg-nickel-500/60' },
+  warning_triggered: { icon: AlertTriangle, color: 'text-supernova-400', bgColor: 'bg-supernova-500/20', borderColor: 'border-supernova-500/50', accentColor: 'bg-supernova-500/60' },
+  warning_resolved: { icon: CheckCircle, color: 'text-nickel-400', bgColor: 'bg-nickel-500/20', borderColor: 'border-nickel-500/50', accentColor: 'bg-nickel-500/60' },
+  adjustment_made: { icon: Settings, color: 'text-neutrino-400', bgColor: 'bg-neutrino-500/20', borderColor: 'border-neutrino-500/50', accentColor: 'bg-neutrino-500/60' },
+  simulation_restarted: { icon: RotateCcw, color: 'text-space-400', bgColor: 'bg-space-500/20', borderColor: 'border-space-500/50', accentColor: 'bg-space-500/60' },
+  approval_submitted: { icon: Send, color: 'text-space-400', bgColor: 'bg-space-500/20', borderColor: 'border-space-500/50', accentColor: 'bg-space-500/60' },
+  approval_postdoc: { icon: User, color: 'text-nickel-400', bgColor: 'bg-nickel-500/20', borderColor: 'border-nickel-500/50', accentColor: 'bg-nickel-500/60' },
+  approval_professor: { icon: Award, color: 'text-nickel-400', bgColor: 'bg-nickel-500/20', borderColor: 'border-nickel-500/50', accentColor: 'bg-nickel-500/60' },
+  multimessenger_pushed: { icon: Radio, color: 'text-neutrino-400', bgColor: 'bg-neutrino-500/20', borderColor: 'border-neutrino-500/50', accentColor: 'bg-neutrino-500/60' }
+};
 
 const chartTheme = {
   backgroundColor: 'rgba(6, 15, 36, 0.6)',
@@ -68,12 +83,13 @@ const createMultiLineOpt = (data: MonitoringDataPoint[], title: string, legend: 
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getTaskById, getMonitoringData, nuclideData, startSimulation, pauseSimulation, resumeSimulation, restartSimulation, multimessengerPushed, submitForApproval } = useStore();
+  const { getTaskById, getMonitoringData, nuclideData, startSimulation, pauseSimulation, resumeSimulation, restartSimulation, multimessengerPushed, submitForApproval, getTimelineEvents } = useStore();
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [, forceUpdate] = useState(0);
   const task = id ? getTaskById(id) : undefined;
   const monitoringData = id ? getMonitoringData(id) : [];
   const nuclides = id ? nuclideData[id] || [] : [];
+  const timelineEvents = id ? getTimelineEvents(id) : [];
 
   useEffect(() => {
     if (!task || task.status === SimulationStatus.COMPLETED || task.status === SimulationStatus.CANCELLED) return;
@@ -219,51 +235,119 @@ export default function TaskDetail() {
         )}
 
         {activeTab === 'logs' && (
-          <div className="space-y-4">
-            {['计算日志', '错误信息', '调整记录'].map((section, sIdx) => (
-              <div key={sIdx} className="card p-5">
-                <h3 className="text-lg font-semibold text-white mb-4">{section}</h3>
-                {sIdx === 0 && (
-                  <div className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin">
-                    {monitoringData.slice(-10).map((d, i) => (
-                      <div key={i} className="font-mono text-sm p-2 bg-space-900/50 rounded"><span className="text-space-500">[{d.timestamp}ms]</span><span className="text-space-300 ml-2">半径={d.shockRadius.toFixed(1)}km, 速度={(d.shockVelocity/1e9).toFixed(2)}e9 cm/s</span></div>
-                    ))}
+          <div className="space-y-6">
+            <div className="card p-5">
+              <h3 className="text-lg font-semibold text-white mb-6 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-space-400" />
+                事件时间线
+                <span className="text-sm font-normal text-space-400 ml-2">({timelineEvents.length} 个事件)</span>
+              </h3>
+              {timelineEvents.length === 0 ? (
+                <div className="text-space-400 text-center py-12">暂无事件记录</div>
+              ) : (
+                <div className="relative pl-4">
+                  <div className="absolute left-[22px] top-2 bottom-2 w-0.5 bg-gradient-to-b from-space-500/50 via-space-600 to-space-700" />
+                  <div className="space-y-3">
+                    {[...timelineEvents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((event, idx) => {
+                      const baseConfig = timelineEventConfig[event.type] || timelineEventConfig.task_created;
+                      const isRejected = event.title.includes('驳回') || event.title.includes('拒绝');
+                      const isCritical = event.title.includes('严重');
+                      const isError = event.title.includes('异常') || event.title.includes('失败');
+                      
+                      const effectiveConfig = {
+                        ...baseConfig,
+                        color: (isRejected || isCritical || isError) ? 'text-supernova-400' : baseConfig.color,
+                        bgColor: (isRejected || isCritical || isError) ? 'bg-supernova-500/20' : baseConfig.bgColor,
+                        borderColor: (isRejected || isCritical || isError) ? 'border-supernova-500/50' : baseConfig.borderColor,
+                        accentColor: (isRejected || isCritical || isError) ? 'bg-supernova-500/60' : baseConfig.accentColor
+                      };
+                      
+                      const EventIcon = effectiveConfig.icon;
+                      return (
+                        <div key={event.id} className="relative pl-10 group animate-fade-in" style={{ animationDelay: `${idx * 50}ms` }}>
+                          <div className={cn(
+                            'absolute left-0 w-11 h-11 rounded-xl flex items-center justify-center z-10 transition-all duration-300',
+                            effectiveConfig.bgColor,
+                            'border-2',
+                            effectiveConfig.borderColor,
+                            'group-hover:scale-110'
+                          )}>
+                            <EventIcon className={cn('w-5 h-5', effectiveConfig.color)} />
+                          </div>
+                          <div className={cn(
+                            'p-4 rounded-xl bg-space-900/50 border border-space-700/50 transition-all duration-300 overflow-hidden',
+                            'hover:bg-space-800/50 hover:border-space-600/50 hover:translate-x-1',
+                            'relative'
+                          )}>
+                            <div className={cn(
+                              'absolute left-0 top-0 bottom-0 w-1',
+                              effectiveConfig.accentColor
+                            )} />
+                            <div className="flex items-start justify-between gap-4 ml-2">
+                              <div className="flex-1 min-w-0">
+                                <h4 className="text-white font-medium flex items-center gap-2">
+                                  {event.title}
+                                </h4>
+                                <p className="text-space-300 text-sm mt-1.5 leading-relaxed">{event.description}</p>
+                                {event.data && Object.keys(event.data).length > 0 && (
+                                  <div className="mt-3 pt-3 border-t border-space-700/50 flex flex-wrap gap-x-4 gap-y-1">
+                                    {Object.entries(event.data).map(([key, value]) => (
+                                      <p key={key} className="text-space-400 text-xs">
+                                        <span className="text-space-500 capitalize">{key}:</span> {String(value)}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <p className="text-space-500 text-xs font-mono whitespace-nowrap shrink-0 mt-0.5">
+                                {new Date(event.timestamp).toLocaleString('zh-CN', {
+                                  month: '2-digit',
+                                  day: '2-digit',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
-                {sIdx === 1 && (task.warnings.length === 0 ? <div className="text-space-400 text-center py-8">暂无错误信息</div> : (
-                  <div className="space-y-2">
-                    {task.warnings.map(w => (
-                      <div key={w.id} className={cn('p-4 rounded-lg', w.severity === 'critical' ? 'severity-critical' : 'severity-warning')}>
-                        <div className="flex items-start gap-3">
-                          {w.severity === 'critical' ? <XCircle className="w-5 h-5 text-red-400" /> : <AlertTriangle className="w-5 h-5 text-supernova-400" />}
-                          <div>
-                            <p className="text-white font-medium">{w.message}</p>
-                            <p className="text-space-400 text-sm mt-1">{new Date(w.timestamp).toLocaleString('zh-CN')}</p>
-                            {w.resolution && <p className="text-nickel-400 text-sm mt-2">处理: {w.resolution}</p>}
+                </div>
+              )}
+            </div>
+
+            <div className="card p-5">
+              <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <Settings className="w-5 h-5 text-purple-400" />
+                调整记录
+                <span className="text-sm font-normal text-space-400 ml-2">({task.adjustments.length} 条记录)</span>
+              </h3>
+              {task.adjustments.length === 0 ? (
+                <div className="text-space-400 text-center py-8">暂无调整记录</div>
+              ) : (
+                <div className="space-y-3">
+                  {[...task.adjustments].sort((a, b) => new Date(b.adjustedAt).getTime() - new Date(a.adjustedAt).getTime()).map(a => (
+                    <div key={a.id} className="p-4 rounded-xl bg-space-900/50 border border-space-700/50 hover:bg-space-800/50 hover:border-purple-500/30 transition-all duration-300 overflow-hidden relative group">
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-purple-500/40" />
+                      <div className="flex items-start gap-3 ml-2">
+                        <div className="p-2 rounded-lg bg-purple-500/20 group-hover:bg-purple-500/30 transition-colors">
+                          <Settings className="w-5 h-5 text-purple-400" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-white font-medium">{a.parameter}: <span className="text-space-400">{a.oldValue}</span> <span className="text-purple-400">→</span> <span className="text-nickel-400">{a.newValue}</span></p>
+                          <p className="text-space-400 text-sm mt-1.5">{a.reason}</p>
+                          <div className="flex items-center gap-4 mt-2 text-xs text-space-500">
+                            <span className="font-mono">{new Date(a.adjustedAt).toLocaleString('zh-CN')}</span>
+                            <span>第 {a.restartCount} 次重算</span>
                           </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                ))}
-                {sIdx === 2 && (task.adjustments.length === 0 ? <div className="text-space-400 text-center py-8">暂无调整记录</div> : (
-                  <div className="space-y-2">
-                    {task.adjustments.map(a => (
-                      <div key={a.id} className="p-4 rounded-lg bg-space-900/50 border border-space-700/50">
-                        <div className="flex items-start gap-3">
-                          <Settings className="w-5 h-5 text-space-400" />
-                          <div>
-                            <p className="text-white font-medium">{a.parameter}: {a.oldValue} → {a.newValue}</p>
-                            <p className="text-space-400 text-sm mt-1">{a.reason}</p>
-                            <p className="text-space-500 text-xs mt-1">{new Date(a.adjustedAt).toLocaleString('zh-CN')} · 重启次数: {a.restartCount}</p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -306,7 +390,7 @@ export default function TaskDetail() {
                     { key: 'postdoc', label: '博士后验证', status: task.approvalStatus === ApprovalStatus.POSTDOC_APPROVED || task.approvalStatus === ApprovalStatus.PROFESSOR_PENDING || task.approvalStatus === ApprovalStatus.PROFESSOR_APPROVED || task.approvalStatus === ApprovalStatus.PROFESSOR_REJECTED },
                     { key: 'professor', label: '教授确认', status: task.approvalStatus === ApprovalStatus.PROFESSOR_APPROVED },
                     { key: 'multimessenger', label: '多信使推送', status: multimessengerPushed[task.id] || false }
-                  ].map((step, idx) => (
+                  ].map((step) => (
                     <div key={step.key} className="flex flex-col items-center z-10 px-2">
                       <div className={cn('w-10 h-10 rounded-full flex items-center justify-center border-2', 
                         step.status 

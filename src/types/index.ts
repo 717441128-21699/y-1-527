@@ -105,6 +105,29 @@ export interface AdjustmentLog {
   restartCount: number;
 }
 
+export interface SimulationVersion {
+  version: number;
+  label: string;
+  parameters: ProgenitorParams;
+  startedAt: Date;
+  completedAt: Date | null;
+  status: SimulationStatus;
+  monitoringData: MonitoringDataPoint[];
+  nuclideData: NuclideAbundance[];
+  ni56Yield?: number;
+  ge68Yield?: number;
+}
+
+export interface TimelineEvent {
+  id: string;
+  taskId: string;
+  type: 'task_created' | 'stage_change' | 'warning_triggered' | 'warning_resolved' | 'adjustment_made' | 'simulation_restarted' | 'approval_submitted' | 'approval_postdoc' | 'approval_professor' | 'multimessenger_pushed';
+  timestamp: Date;
+  title: string;
+  description: string;
+  data?: any;
+}
+
 export interface ShockVerification {
   shockVelocityValid: boolean;
   radiusEvolutionValid: boolean;

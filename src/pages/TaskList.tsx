@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Filter, SortAsc, Play, Pause, RotateCcw, Eye, ChevronLeft, ChevronRight, Flame, Atom, Wind } from 'lucide-react';
+import { Search, Filter, SortAsc, Play, Pause, RotateCcw, Eye, ChevronLeft, ChevronRight, Flame, Atom, Wind, Database, Zap } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { SimulationStatus, SimulationTask } from '@/types';
 import { cn } from '@/lib/utils';
@@ -175,6 +175,17 @@ export default function TaskList() {
                     <Wind className="w-4 h-4 text-nickel-400" />
                     <span>旋转: <span className="font-mono text-white">{task.parameters.rotationVelocity}km/s</span></span>
                   </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-germanium-500/15 text-germanium-400 border border-germanium-500/30">
+                    <Database className="w-3 h-3" />
+                    {task.parameters.equationOfState}
+                  </span>
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-neutrino-500/15 text-neutrino-400 border border-neutrino-500/30">
+                    <Zap className="w-3 h-3" />
+                    {task.parameters.reactionNetwork}
+                  </span>
                 </div>
 
                 <div className="mb-4">

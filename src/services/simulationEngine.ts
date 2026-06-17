@@ -192,8 +192,15 @@ export class SimulationEngine {
 
       if (nextStatus === SimulationStatus.COMPLETED) {
         const finalData = this.getCurrentMonitoringData();
+        const currentVersion = useStore.getState().getCurrentVersion(this.taskId);
         useStore.getState().updateTask(this.taskId, {
           completedAt: new Date(),
+          ni56Yield: this.state.ni56Mass,
+          ge68Yield: this.state.ge68Mass
+        });
+        useStore.getState().updateVersionData(this.taskId, currentVersion, {
+          completedAt: new Date(),
+          status: SimulationStatus.COMPLETED,
           ni56Yield: this.state.ni56Mass,
           ge68Yield: this.state.ge68Mass
         });

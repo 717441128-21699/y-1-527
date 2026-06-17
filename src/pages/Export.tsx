@@ -67,6 +67,7 @@ export default function Export() {
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [showPreview, setShowPreview] = useState<boolean>(false);
+  const [isAutoMatched, setIsAutoMatched] = useState<boolean>(false);
 
   const currentTaskVersions = selectedTasks.length === 1 
     ? getVersions(selectedTasks[0]) 
@@ -105,31 +106,63 @@ export default function Export() {
     };
   }, [exports, updateExport]);
 
+  useEffect(() => {
+    if (selectedTasks.length === 1) {
+      const task = tasks.find(t => t.id === selectedTasks[0]);
+      if (task) {
+        const matchedOption = networkOptions.find(opt => 
+          opt.value.startsWith(task.parameters.reactionNetwork)
+        );
+        if (matchedOption) {
+          setNetworkVersion(matchedOption.value);
+          setIsAutoMatched(true);
+        }
+      }
+    } else {
+      setNetworkVersion(networkOptions[0].value);
+      setIsAutoMatched(false);
+    }
+  }, [selectedTasks, tasks]);
+
   const generateDownloadUrl = (exp: ExportTask & { version?: number | null }): string => {
     const versionNum = exp.version ?? undefined;
     const monitoringData = getMonitoringData(exp.taskId, versionNum);
     const versions = getVersions(exp.taskId);
-    const versionInfo = versionNum !== undefined && versions[versionNum] 
-      ? versions[versionNum] 
+    const versionInfo = versionNum !== undefined
+      ? versions.find(v => v.version === versionNum) || (versions.length > 0 ? versions[versions.length - 1] : null)
       : versions.length > 0 ? versions[versions.length - 1] : null;
+    const task = tasks.find(t => t.id === exp.taskId);
     
     const filteredData = monitoringData.filter(d => 
       d.timestamp >= exp.timeWindow.start && d.timestamp <= exp.timeWindow.end
     );
+
+    const taskName = task?.name || exp.taskId;
+    const versionNumber = versionInfo ? versionInfo.version : (versions.length > 0 ? versions[versions.length - 1].version : 0);
+    const versionLabel = versionInfo ? versionInfo.label : '最新版本';
+    const equationOfState = versionInfo?.parameters.equationOfState || task?.parameters.equationOfState || '未知';
+    const reactionNetwork = versionInfo?.parameters.reactionNetwork || task?.parameters.reactionNetwork || '未知';
+    const progenitorMass = versionInfo?.parameters.mass || task?.parameters.mass;
+    const progenitorTypeLabel = exp.progenitorType || (progenitorMass ? `${progenitorMass}M☉` : '未知');
+    const exportTime = new Date().toISOString();
+    const dataFormatDesc = '单位: timestamp=ms, shock_radius=km, shock_velocity=cm/s, nu_luminosity=erg/s, mass=M☉, total_energy=erg, entropy=k_b/baryon';
 
     let content = '';
     let mimeType = 'text/plain';
 
     if (exp.format === 'csv') {
       mimeType = 'text/csv;charset=utf-8';
-      const versionLabel = versionInfo ? versionInfo.label : '最新版本';
-      const versionNumber = versionInfo ? versionInfo.version : (versions.length > 0 ? versions[versions.length - 1].version : 0);
       
-      content += `# Export Version: v${versionNumber} (${versionLabel})\n`;
-      content += `# Task ID: ${exp.taskId}\n`;
-      content += `# Export Type: ${exp.exportType}\n`;
-      content += `# Time Window: ${exp.timeWindow.start} - ${exp.timeWindow.end} ms\n`;
-      content += `# Generated At: ${new Date().toISOString()}\n`;
+      content += `# 任务名称: ${taskName}\n`;
+      content += `# 任务ID: ${exp.taskId}\n`;
+      content += `# 前身星类型/筛选范围: ${progenitorTypeLabel}\n`;
+      content += `# 时间窗口: ${exp.timeWindow.start} - ${exp.timeWindow.end} ms\n`;
+      content += `# 版本号: v${versionNumber}\n`;
+      content += `# 版本标签: ${versionLabel}\n`;
+      content += `# 状态方程: ${equationOfState}\n`;
+      content += `# 核反应网络: ${reactionNetwork}\n`;
+      content += `# 导出时间: ${exportTime}\n`;
+      content += `# 数据格式说明: ${dataFormatDesc}\n`;
       content += '\n';
       
       const headers = ['timestamp', 'shock_radius', 'shock_velocity', 'nu_e_luminosity', 
@@ -154,19 +187,40 @@ export default function Export() {
       });
     } else if (exp.format === 'fits' || exp.format === 'hdf5') {
       mimeType = 'application/json';
-      const versionNumber = versionInfo ? versionInfo.version : (versions.length > 0 ? versions[versions.length - 1].version : 0);
-      const versionLabel = versionInfo ? versionInfo.label : '最新版本';
       
       const data = {
         export_info: {
+          task_name: taskName,
           task_id: exp.taskId,
+          progenitor_type: progenitorTypeLabel,
           export_type: exp.exportType,
           format: exp.format,
-          time_window: exp.timeWindow,
-          generated_at: new Date().toISOString(),
+          time_window: {
+            start: exp.timeWindow.start,
+            end: exp.timeWindow.end,
+            unit: 'ms'
+          },
+          generated_at: exportTime,
           version: {
             number: versionNumber,
             label: versionLabel
+          },
+          equation_of_state: equationOfState,
+          reaction_network: reactionNetwork,
+          data_format: {
+            description: dataFormatDesc,
+            fields: {
+              timestamp: 'ms post-bounce',
+              shock_radius: 'km',
+              shock_velocity: 'cm/s',
+              nu_e_luminosity: 'erg/s',
+              nu_ebar_luminosity: 'erg/s',
+              nu_x_luminosity: 'erg/s',
+              ni56_mass: 'M☉',
+              ge68_mass: 'M☉',
+              total_energy: 'erg',
+              entropy: 'k_b/baryon'
+            }
           }
         },
         data_points: filteredData.map(d => ({
@@ -228,17 +282,23 @@ export default function Export() {
     const task = tasks.find(t => t.id === exp.taskId);
     const versions = getVersions(exp.taskId);
     let versionNumber: number;
+    let versionLabel = '最新版本';
     
     if (exp.version !== undefined && exp.version !== null) {
       versionNumber = exp.version;
+      const v = versions.find(v => v.version === exp.version);
+      versionLabel = v ? v.label : `v${exp.version}`;
     } else if (versions.length > 0) {
       versionNumber = versions[versions.length - 1].version;
+      versionLabel = versions[versions.length - 1].label;
     } else {
       versionNumber = 0;
     }
     
     const taskName = task?.name || exp.taskId;
-    const fileName = `${taskName}_v${versionNumber}_${exp.timeWindow.start}-${exp.timeWindow.end}ms.${exp.format}`;
+    const safeTaskName = taskName.replace(/\s+/g, '_').replace(/[\\/:*?"<>|]/g, '');
+    const safeVersionLabel = versionLabel.replace(/\s+/g, '_').replace(/[\\/:*?"<>|]/g, '');
+    const fileName = `${safeTaskName}_${safeVersionLabel}_v${versionNumber}_${exp.timeWindow.start}-${exp.timeWindow.end}ms.${exp.format}`;
     
     const a = document.createElement('a');
     a.href = exp.downloadUrl;
@@ -290,9 +350,22 @@ export default function Export() {
 
               <div>
                 <label className="block text-space-300 text-sm mb-2">核反应网络版本</label>
-                <select value={networkVersion} onChange={(e) => setNetworkVersion(e.target.value)} className="input-field">
+                <select 
+                  value={networkVersion} 
+                  onChange={(e) => {
+                    setNetworkVersion(e.target.value);
+                    setIsAutoMatched(false);
+                  }} 
+                  className="input-field"
+                >
                   {networkOptions.map(opt => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
                 </select>
+                {isAutoMatched && (
+                  <p className="text-nickel-400 text-xs mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    网络版本已自动匹配选中任务
+                  </p>
+                )}
               </div>
 
               <div>

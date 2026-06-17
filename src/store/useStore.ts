@@ -71,6 +71,7 @@ interface AppState {
   updateExport: (id: string, updates: Partial<ExportTask>) => void;
   getMonitoringData: (taskId: string, version?: number) => MonitoringDataPoint[];
   addMonitoringData: (taskId: string, data: MonitoringDataPoint) => void;
+  updateVersionData: (taskId: string, version: number, updates: Partial<SimulationVersion>) => void;
   updateApprovalStatus: (taskId: string, status: ApprovalStatus) => void;
   setIsLoading: (loading: boolean) => void;
   
@@ -369,12 +370,46 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     addMonitoringData: (taskId, data) => {
-      set((state) => ({
-        monitoringData: {
-          ...state.monitoringData,
-          [taskId]: [...(state.monitoringData[taskId] || []), data]
+      const state = get();
+      const currentVer = state.currentVersion[taskId] ?? 0;
+      const versions = state.simulationVersions[taskId] || [];
+      
+      set((state) => {
+        const newVersions = [...(state.simulationVersions[taskId] || [])];
+        if (newVersions[currentVer]) {
+          newVersions[currentVer] = {
+            ...newVersions[currentVer],
+            monitoringData: [...newVersions[currentVer].monitoringData, data],
+            status: state.tasks.find(t => t.id === taskId)?.status || SimulationStatus.PENDING_VALIDATION
+          };
         }
-      }));
+        
+        return {
+          monitoringData: {
+            ...state.monitoringData,
+            [taskId]: [...(state.monitoringData[taskId] || []), data]
+          },
+          simulationVersions: {
+            ...state.simulationVersions,
+            [taskId]: newVersions
+          }
+        };
+      });
+    },
+
+    updateVersionData: (taskId, version, updates: Partial<SimulationVersion>) => {
+      set((state) => {
+        const versions = [...(state.simulationVersions[taskId] || [])];
+        if (versions[version]) {
+          versions[version] = { ...versions[version], ...updates };
+        }
+        return {
+          simulationVersions: {
+            ...state.simulationVersions,
+            [taskId]: versions
+          }
+        };
+      });
     },
 
     updateApprovalStatus: (taskId, status) => set((state) => ({

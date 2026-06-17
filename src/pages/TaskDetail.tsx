@@ -1,14 +1,14 @@
-import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Play, Pause, RotateCcw, Download, Settings, ArrowLeft,
   Flame, Atom, Wind, Database, Zap, Target,
   CheckCircle2, Circle, Loader2, AlertTriangle, XCircle, Activity, Clock,
-  BarChart3, FileText, Radio
+  BarChart3, FileText, Radio, CheckSquare
 } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { useStore } from '@/store/useStore';
-import { SimulationStatus, MonitoringDataPoint } from '@/types';
+import { SimulationStatus, MonitoringDataPoint, ApprovalStatus } from '@/types';
 import { cn } from '@/lib/utils';
 
 const statusMap: Record<SimulationStatus, { label: string; cls: string }> = {
@@ -26,8 +26,8 @@ const statusMap: Record<SimulationStatus, { label: string; cls: string }> = {
 const priorityMap = { high: ['高', 'text-supernova-400'], medium: ['中', 'text-germanium-400'], low: ['低', 'text-nickel-400'] };
 const stageLabels: Record<string, string> = { [SimulationStatus.PENDING_VALIDATION]: '待校验', [SimulationStatus.GRID_GENERATION]: '网格生成', [SimulationStatus.COLLAPSE_PHASE]: '塌缩阶段', [SimulationStatus.SHOCK_BOUNCE]: '反弹激波', [SimulationStatus.NUCLEOSYNTHESIS]: '核合成', [SimulationStatus.COMPLETED]: '完成' };
 const stageIcons = [SimulationStatus.PENDING_VALIDATION, SimulationStatus.GRID_GENERATION, SimulationStatus.COLLAPSE_PHASE, SimulationStatus.SHOCK_BOUNCE, SimulationStatus.NUCLEOSYNTHESIS, SimulationStatus.COMPLETED];
-type TabKey = 'overview' | 'monitoring' | 'logs' | 'nucleosynthesis';
-const tabConfig = [{ key: 'overview', label: '概览', icon: BarChart3 }, { key: 'monitoring', label: '实时监控', icon: Activity }, { key: 'logs', label: '模拟日志', icon: FileText }, { key: 'nucleosynthesis', label: '核合成结果', icon: Radio }];
+type TabKey = 'overview' | 'monitoring' | 'logs' | 'nucleosynthesis' | 'approval';
+const tabConfig = [{ key: 'overview', label: '概览', icon: BarChart3 }, { key: 'monitoring', label: '实时监控', icon: Activity }, { key: 'logs', label: '模拟日志', icon: FileText }, { key: 'nucleosynthesis', label: '核合成结果', icon: Radio }, { key: 'approval', label: '审批流程', icon: CheckSquare }];
 
 const chartTheme = {
   backgroundColor: 'rgba(6, 15, 36, 0.6)',
@@ -67,11 +67,29 @@ const createMultiLineOpt = (data: MonitoringDataPoint[], title: string, legend: 
 
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
-  const { getTaskById, getMonitoringData, nuclideData } = useStore();
+  const navigate = useNavigate();
+  const { getTaskById, getMonitoringData, nuclideData, startSimulation, pauseSimulation, resumeSimulation, restartSimulation, multimessengerPushed, submitForApproval } = useStore();
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
+  const [, forceUpdate] = useState(0);
   const task = id ? getTaskById(id) : undefined;
   const monitoringData = id ? getMonitoringData(id) : [];
   const nuclides = id ? nuclideData[id] || [] : [];
+
+  useEffect(() => {
+    if (!task || task.status === SimulationStatus.COMPLETED || task.status === SimulationStatus.CANCELLED) return;
+    
+    const interval = setInterval(() => {
+      forceUpdate(n => n + 1);
+    }, 500);
+    
+    return () => clearInterval(interval);
+  }, [task?.status]);
+
+  useEffect(() => {
+    if (task) {
+      document.title = `${task.name} - 任务详情 - 超新星模拟平台`;
+    }
+  }, [task?.name]);
 
   if (!task) return (
     <div className="min-h-screen flex flex-col items-center justify-center text-center p-8">
@@ -125,11 +143,15 @@ export default function TaskDetail() {
               <p className="text-space-400 text-sm mt-1"><Clock className="w-4 h-4 inline mr-1" />创建于 {new Date(task.createdAt).toLocaleString('zh-CN')}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {task.status === SimulationStatus.PAUSED && <button className="btn-primary flex items-center gap-2"><Play className="w-4 h-4" />继续</button>}
-            {task.status === SimulationStatus.ABNORMAL_FALLBACK && <button className="btn-warning flex items-center gap-2"><RotateCcw className="w-4 h-4" />重启</button>}
-            {canPause && <button className="btn-secondary flex items-center gap-2"><Pause className="w-4 h-4" />暂停</button>}
-            <button className="btn-secondary flex items-center gap-2"><Download className="w-4 h-4" />导出</button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {task.status === SimulationStatus.PAUSED && <button onClick={() => resumeSimulation(task.id)} className="btn-primary flex items-center gap-2"><Play className="w-4 h-4" />继续</button>}
+            {task.status === SimulationStatus.ABNORMAL_FALLBACK && <button onClick={() => restartSimulation(task.id)} className="btn-warning flex items-center gap-2"><RotateCcw className="w-4 h-4" />重启</button>}
+            {task.status === SimulationStatus.PENDING_VALIDATION && <button onClick={() => startSimulation(task.id)} className="btn-primary flex items-center gap-2"><Play className="w-4 h-4" />开始模拟</button>}
+            {canPause && <button onClick={() => pauseSimulation(task.id)} className="btn-secondary flex items-center gap-2"><Pause className="w-4 h-4" />暂停</button>}
+            {task.status === SimulationStatus.COMPLETED && task.approvalStatus === ApprovalStatus.NOT_SUBMITTED && (
+              <button onClick={() => submitForApproval(task.id)} className="btn-primary flex items-center gap-2"><CheckSquare className="w-4 h-4" />提交审批</button>
+            )}
+            <button onClick={() => navigate('/export')} className="btn-secondary flex items-center gap-2"><Download className="w-4 h-4" />导出</button>
             <button className="btn-secondary flex items-center gap-2"><Settings className="w-4 h-4" />配置</button>
           </div>
         </div>
@@ -268,6 +290,140 @@ export default function TaskDetail() {
             <div className="card p-4">
               <ReactECharts option={{ ...chartTheme, title: { text: '元素丰度分布', left: 10, top: 10, textStyle: { fontSize: 14 } }, grid: { left: 60, right: 20, top: 50, bottom: 40 }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: nuclides.map(n => n.nuclide), axisLabel: { color: '#97add9', rotate: 45 } }, yAxis: { type: 'log', axisLabel: { color: '#97add9' } }, series: [{ type: 'bar', data: nuclides.map(n => n.massFraction), itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#7c3aed' }, { offset: 1, color: '#f97316' }] } } }] }} style={{ height: 400 }} />
             </div>
+          </div>
+        )}
+
+        {activeTab === 'approval' && (
+          <div className="space-y-6">
+            <div className="card p-5">
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2"><CheckSquare className="w-5 h-5 text-space-400" />审批流程状态</h2>
+              
+              <div className="relative">
+                <div className="absolute top-5 left-5 right-5 h-0.5 bg-space-700" />
+                <div className="flex justify-between relative">
+                  {[
+                    { key: 'submit', label: '提交审批', status: task.approvalStatus !== ApprovalStatus.NOT_SUBMITTED },
+                    { key: 'postdoc', label: '博士后验证', status: task.approvalStatus === ApprovalStatus.POSTDOC_APPROVED || task.approvalStatus === ApprovalStatus.PROFESSOR_PENDING || task.approvalStatus === ApprovalStatus.PROFESSOR_APPROVED || task.approvalStatus === ApprovalStatus.PROFESSOR_REJECTED },
+                    { key: 'professor', label: '教授确认', status: task.approvalStatus === ApprovalStatus.PROFESSOR_APPROVED },
+                    { key: 'multimessenger', label: '多信使推送', status: multimessengerPushed[task.id] || false }
+                  ].map((step, idx) => (
+                    <div key={step.key} className="flex flex-col items-center z-10 px-2">
+                      <div className={cn('w-10 h-10 rounded-full flex items-center justify-center border-2', 
+                        step.status 
+                          ? 'bg-nickel-600 border-nickel-500 text-white shadow-glow-green' 
+                          : 'bg-space-900 border-space-600 text-space-500'
+                      )}>
+                        {step.status ? <CheckCircle2 className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
+                      </div>
+                      <p className="text-white text-sm mt-2 text-center whitespace-nowrap">{step.label}</p>
+                      {step.status && <p className="text-nickel-400 text-xs mt-1">已完成</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {task.approvalHistory.length > 0 && (
+              <div className="card p-5">
+                <h2 className="text-lg font-semibold text-white mb-4">审批记录</h2>
+                <div className="space-y-4">
+                  {task.approvalHistory.map(record => (
+                    <div key={record.id} className="p-4 rounded-lg bg-space-900/50 border border-space-700/50">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div className={cn('px-2 py-1 rounded text-xs font-medium', 
+                            record.level === 'postdoc' ? 'bg-neutrino-600/20 text-neutrino-400' : 'bg-supernova-600/20 text-supernova-400'
+                          )}>
+                            {record.level === 'postdoc' ? '博士后审核' : '教授审核'}
+                          </div>
+                          <div className={cn('px-2 py-1 rounded text-xs font-medium',
+                            record.status === 'approved' ? 'bg-nickel-600/20 text-nickel-400' : 'bg-red-600/20 text-red-400'
+                          )}>
+                            {record.status === 'approved' ? '通过' : '驳回'}
+                          </div>
+                        </div>
+                        <p className="text-space-500 text-xs">{new Date(record.approvedAt).toLocaleString('zh-CN')}</p>
+                      </div>
+                      
+                      <p className="text-white font-medium">{record.comments || '无备注'}</p>
+                      
+                      {record.shockDynamicsVerification && record.level === 'postdoc' && (
+                        <div className="mt-3 pt-3 border-t border-space-700/50 space-y-1 text-sm">
+                          <p className="text-space-400">激波动力学验证：</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="flex items-center gap-1">
+                              {record.shockDynamicsVerification.shockVelocityValid 
+                                ? <CheckCircle2 className="w-4 h-4 text-nickel-400" /> 
+                                : <XCircle className="w-4 h-4 text-red-400" />}
+                              <span className="text-space-300">激波速度</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {record.shockDynamicsVerification.radiusEvolutionValid 
+                                ? <CheckCircle2 className="w-4 h-4 text-nickel-400" /> 
+                                : <XCircle className="w-4 h-4 text-red-400" />}
+                              <span className="text-space-300">半径演化</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {record.shockDynamicsVerification.energyConservationValid 
+                                ? <CheckCircle2 className="w-4 h-4 text-nickel-400" /> 
+                                : <XCircle className="w-4 h-4 text-red-400" />}
+                              <span className="text-space-300">能量守恒</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {record.nucleosynthesisAssessment && record.level === 'professor' && (
+                        <div className="mt-3 pt-3 border-t border-space-700/50 space-y-2 text-sm">
+                          <p className="text-space-400">核合成评估：</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="flex items-center gap-1">
+                              {record.nucleosynthesisAssessment.ni56YieldValid 
+                                ? <CheckCircle2 className="w-4 h-4 text-nickel-400" /> 
+                                : <XCircle className="w-4 h-4 text-red-400" />}
+                              <span className="text-space-300">镍-56产额</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {record.nucleosynthesisAssessment.abundanceDistributionValid 
+                                ? <CheckCircle2 className="w-4 h-4 text-nickel-400" /> 
+                                : <XCircle className="w-4 h-4 text-red-400" />}
+                              <span className="text-space-300">丰度分布</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-space-400">观测匹配度:</span>
+                            <div className="flex-1 progress-bar">
+                              <div className="progress-fill" style={{ width: `${record.nucleosynthesisAssessment.observationMatch}%` }} />
+                            </div>
+                            <span className="text-white font-mono text-sm w-12 text-right">{record.nucleosynthesisAssessment.observationMatch}%</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {multimessengerPushed[task.id] && (
+              <div className="card p-5 bg-gradient-to-r from-neutrino-900/30 to-space-900/30 border-neutrino-500/30">
+                <div className="flex items-start gap-4">
+                  <div className="p-3 rounded-xl bg-neutrino-600/20">
+                    <Radio className="w-6 h-6 text-neutrino-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-white">已推送到多信使观测提案系统</h3>
+                    <p className="text-space-400 text-sm mt-1">
+                      该模拟结果已通过两级审批，自动推送至多信使观测提案生成系统。
+                    </p>
+                    <p className="text-neutrino-400 text-xs mt-2">
+                      提案编号: MMS-{task.id.toUpperCase().replace(/-/g, '')}
+                    </p>
+                  </div>
+                  <CheckCircle2 className="w-6 h-6 text-nickel-400" />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

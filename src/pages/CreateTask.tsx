@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -29,6 +30,8 @@ const slideVariants = { initial: { opacity: 0, x: 20 }, animate: { opacity: 1, x
 export default function CreateTask() {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const navigate = useNavigate();
   const { equationsOfState: eosList, reactionNetworks: netList, addTask, currentUser } = useStore();
 
   const { register, watch, setValue, handleSubmit, formState: { errors } } = useForm<FormData>({
@@ -79,8 +82,12 @@ export default function CreateTask() {
       stageTimeline: Object.values(SimulationStatus).slice(0, 6).map((stage, idx) => ({ id: `stage-${genId()}`, stage, startTime: new Date(), endTime: null, duration: 0, status: idx === 0 ? 'running' as const : 'pending' as const }))
     };
     addTask(task);
+    useStore.getState().startSimulation(task.id);
     setSubmitting(false);
-    setStep(1);
+    setShowSuccess(true);
+    setTimeout(() => {
+      navigate(`/tasks/${task.id}`);
+    }, 1500);
   };
 
   const Slider = ({ label, field, min, max, unit, step = 1, icon: Icon }: { label: string; field: keyof FormData; min: number; max: number; unit: string; step?: number; icon: React.ComponentType<{ className?: string }> }) => (
@@ -269,6 +276,24 @@ export default function CreateTask() {
           </div>
         </motion.div>
       </div>
+
+      <AnimatePresence>
+        {showSuccess && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-space-950/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ type: 'spring', damping: 25, stiffness: 300 }} className="card p-8 text-center max-w-md w-full">
+              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-nickel-500 to-nickel-700 flex items-center justify-center mx-auto mb-6 shadow-glow-green">
+                <Check className="w-10 h-10 text-white" />
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2">任务创建成功</h2>
+              <p className="text-space-300 mb-4">模拟引擎已启动，正在跳转到任务详情页...</p>
+              <div className="flex items-center justify-center gap-2 text-space-400 text-sm">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>即将跳转</span>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

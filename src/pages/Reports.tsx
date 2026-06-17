@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, Download, Eye, Plus, ChevronLeft, ChevronRight, X, Check, Loader2, Sparkles, Activity, Atom, Radio, BookOpen } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
@@ -8,6 +8,8 @@ import { SimulationStatus, SimulationReport, ReportSection } from '@/types';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 const secOpts = [
   { v: 'shock_animation', l: '激波动画', i: Activity, c: 'text-supernova-400' },
@@ -89,6 +91,8 @@ export default function Reports() {
   const [showH, setShowH] = useState(true);
   const [gen, setGen] = useState(false);
   const [prog, setProg] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+  const pdfRef = useRef<HTMLDivElement>(null);
 
   const doneTasks = useMemo(() => tasks.filter(t => t.status === SimulationStatus.COMPLETED), [tasks]);
   const taskName = (id: string) => tasks.find(t => t.id === id)?.name || '未知任务';
@@ -104,12 +108,73 @@ export default function Reports() {
   };
   const toggleSec = (v: string) => setSelSecs(p => p.includes(v) ? p.filter(s => s !== v) : [...p, v]);
 
+  const handleDownloadPDF = async (report: SimulationReport) => {
+    if (downloading) return;
+    setDownloading(true);
+    setSelRep(report);
+    const originalPage = page;
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const pages = [{ t: '标题页', c: 'cover' }, ...report.sections.map(s => ({ t: s.title, c: s.type })), { t: '结论', c: 'conclusion' }];
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+
+      for (let i = 0; i < pages.length; i++) {
+        setPage(i);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        if (pdfRef.current) {
+          const canvas = await html2canvas(pdfRef.current, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+            logging: false,
+          });
+          
+          const imgData = canvas.toDataURL('image/png');
+          const imgWidth = pageWidth - 20;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          
+          if (i > 0) {
+            pdf.addPage();
+          }
+          
+          const yPos = (pageHeight - imgHeight) / 2;
+          pdf.addImage(imgData, 'PNG', 10, yPos > 0 ? yPos : 10, imgWidth, imgHeight);
+        }
+      }
+
+      const tn = taskName(report.taskId);
+      const fileName = `${tn}_超新星模拟报告.pdf`;
+      
+      const pdfBlob = pdf.output('blob');
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      setPage(originalPage);
+    } catch (error) {
+      console.error('PDF生成失败:', error);
+      alert('PDF生成失败，请重试');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const renderPage = () => {
     if (!selRep) return null;
     const pages = [{ t: '标题页', c: 'cover' }, ...selRep.sections.map(s => ({ t: s.title, c: s.type })), { t: '结论', c: 'conclusion' }];
     const cur = pages[page];
     const tn = taskName(selRep.taskId);
-    return <div className="bg-white text-gray-900 rounded-lg p-8 min-h-[500px] flex flex-col">
+    return <div ref={pdfRef} className="bg-white text-gray-900 rounded-lg p-8 min-h-[500px] flex flex-col">
       {showH && <div className="border-b border-gray-300 pb-3 mb-4 flex justify-between items-center text-sm text-gray-500"><span>超新星模拟分析报告</span><span>{tn}</span></div>}
       <div className="flex-1">
         {cur.c === 'cover' && <div className="h-full flex flex-col items-center justify-center text-center py-12">
@@ -179,7 +244,7 @@ export default function Reports() {
                         <FileText className="w-10 h-10 text-space-200 relative z-10" />
                         <div className="absolute inset-0 bg-space-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
                           <button onClick={() => setSelRep(r)} className="btn-primary text-sm py-1.5 px-3 flex items-center gap-1"><Eye className="w-4 h-4" />预览</button>
-                          <button className="btn-success text-sm py-1.5 px-3 flex items-center gap-1"><Download className="w-4 h-4" />下载</button>
+                          <button onClick={(e) => { e.stopPropagation(); handleDownloadPDF(r); }} disabled={downloading} className="btn-success text-sm py-1.5 px-3 flex items-center gap-1 disabled:opacity-50"><Download className="w-4 h-4" />{downloading ? '下载中...' : '下载'}</button>
                         </div>
                       </div>
                       <div className="p-4">
@@ -255,7 +320,7 @@ export default function Reports() {
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-bold text-white">报告预览</h2>
                   <div className="flex items-center gap-3">
-                    <button className="btn-success text-sm flex items-center gap-1"><Download className="w-4 h-4" />下载 PDF</button>
+                    <button onClick={() => selRep && handleDownloadPDF(selRep)} disabled={downloading} className="btn-success text-sm flex items-center gap-1 disabled:opacity-50"><Download className="w-4 h-4" />{downloading ? '下载中...' : '下载 PDF'}</button>
                     <button onClick={() => setSelRep(null)} className="btn-secondary p-2"><X className="w-5 h-5" /></button>
                   </div>
                 </div>

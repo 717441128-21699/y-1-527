@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Download, X, RefreshCw, Eye, Database, FileJson, FileSpreadsheet, FileImage, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn, formatDateTime } from '@/lib/utils';
-import { SimulationStatus, ExportTask } from '@/types';
+import { SimulationStatus, ExportTask, MonitoringDataPoint } from '@/types';
 
 const dataTypeOptions = [
   { value: 'hydrodynamics', label: '流体数据' },
@@ -55,7 +55,7 @@ const previewData = [
 ];
 
 export default function Export() {
-  const { exports, tasks, addExport } = useStore();
+  const { exports, tasks, addExport, updateExport, getMonitoringData } = useStore();
   const completedTasks = tasks.filter(t => t.status === SimulationStatus.COMPLETED);
 
   const [dataType, setDataType] = useState<string>('hydrodynamics');
@@ -66,6 +66,100 @@ export default function Export() {
   const [format, setFormat] = useState<string>('csv');
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [showPreview, setShowPreview] = useState<boolean>(false);
+
+  useEffect(() => {
+    const intervals: Record<string, number> = {};
+    
+    exports.forEach(exp => {
+      if (exp.status === 'pending' && !intervals[exp.id]) {
+        setTimeout(() => {
+          updateExport(exp.id, { status: 'processing' });
+        }, 500);
+        
+        const progressInterval = window.setInterval(() => {
+          const currentExp = useStore.getState().exports.find(e => e.id === exp.id);
+          if (!currentExp || currentExp.status !== 'processing') {
+            clearInterval(progressInterval);
+            return;
+          }
+        }, 300);
+        
+        setTimeout(() => {
+          clearInterval(progressInterval);
+          const downloadUrl = generateDownloadUrl(exp);
+          updateExport(exp.id, { 
+            status: 'completed', 
+            downloadUrl 
+          });
+        }, 2000 + Math.random() * 2000);
+      }
+    });
+    
+    return () => {
+      Object.values(intervals).forEach(id => clearInterval(id));
+    };
+  }, [exports, updateExport]);
+
+  const generateDownloadUrl = (exp: ExportTask): string => {
+    const monitoringData = getMonitoringData(exp.taskId);
+    const filteredData = monitoringData.filter(d => 
+      d.timestamp >= exp.timeWindow.start && d.timestamp <= exp.timeWindow.end
+    );
+
+    let content = '';
+    let mimeType = 'text/plain';
+
+    if (exp.format === 'csv') {
+      mimeType = 'text/csv;charset=utf-8';
+      const headers = ['timestamp', 'shock_radius', 'shock_velocity', 'nu_e_luminosity', 
+                       'nu_ebar_luminosity', 'nu_x_luminosity', 'ni56_mass', 'ge68_mass', 
+                       'total_energy', 'entropy'];
+      content = headers.join(',') + '\n';
+      
+      filteredData.forEach(d => {
+        const row = [
+          d.timestamp.toFixed(6),
+          d.shockRadius.toExponential(4),
+          d.shockVelocity.toExponential(4),
+          d.nu_e_luminosity.toExponential(4),
+          d.nu_ebar_luminosity.toExponential(4),
+          d.nu_x_luminosity.toExponential(4),
+          d.ni56_mass.toExponential(4),
+          d.ge68_mass.toExponential(4),
+          d.totalEnergy.toExponential(4),
+          d.entropy.toFixed(4)
+        ];
+        content += row.join(',') + '\n';
+      });
+    } else if (exp.format === 'fits' || exp.format === 'hdf5') {
+      mimeType = 'application/json';
+      const data = {
+        export_info: {
+          task_id: exp.taskId,
+          export_type: exp.exportType,
+          format: exp.format,
+          time_window: exp.timeWindow,
+          generated_at: new Date().toISOString()
+        },
+        data_points: filteredData.map(d => ({
+          timestamp: d.timestamp,
+          shock_radius: d.shockRadius,
+          shock_velocity: d.shockVelocity,
+          nu_e_luminosity: d.nu_e_luminosity,
+          nu_ebar_luminosity: d.nu_ebar_luminosity,
+          nu_x_luminosity: d.nu_x_luminosity,
+          ni56_mass: d.ni56_mass,
+          ge68_mass: d.ge68_mass,
+          total_energy: d.totalEnergy,
+          entropy: d.entropy
+        }))
+      };
+      content = JSON.stringify(data, null, 2);
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    return URL.createObjectURL(blob);
+  };
 
   const handleTaskToggle = (taskId: string) => {
     setSelectedTasks(prev => prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId]);
@@ -92,6 +186,20 @@ export default function Export() {
     });
 
     setSelectedTasks([]);
+  };
+
+  const handleDownload = (exp: ExportTask) => {
+    if (exp.status !== 'completed' || !exp.downloadUrl) return;
+    
+    const task = tasks.find(t => t.id === exp.taskId);
+    const fileName = `${task?.name || exp.taskId}_${exp.exportType}_${exp.timeWindow.start}-${exp.timeWindow.end}ms.${exp.format}`;
+    
+    const a = document.createElement('a');
+    a.href = exp.downloadUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleTimeChange = (type: 'start' | 'end', value: number) => {
@@ -228,7 +336,7 @@ export default function Export() {
                           <td className="py-3 px-2 text-space-400 text-xs">{formatDateTime(exp.createdAt)}</td>
                           <td className="py-3 px-2">
                             <div className="flex gap-1">
-                              {exp.status === 'completed' && <button className="p-1.5 rounded-lg text-nickel-400 hover:bg-nickel-500/20 transition-colors"><Download className="w-4 h-4" /></button>}
+                              {exp.status === 'completed' && <button onClick={() => handleDownload(exp)} className="p-1.5 rounded-lg text-nickel-400 hover:bg-nickel-500/20 transition-colors" title="下载文件"><Download className="w-4 h-4" /></button>}
                               {exp.status === 'processing' && <button className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"><X className="w-4 h-4" /></button>}
                               {exp.status === 'failed' && <button className="p-1.5 rounded-lg text-supernova-400 hover:bg-supernova-500/20 transition-colors"><RefreshCw className="w-4 h-4" /></button>}
                             </div>

@@ -9,8 +9,9 @@ import { cn } from '@/lib/utils';
 const pageTitleMap: Record<string, string> = {
   '/': '首页看板',
   '/tasks': '任务管理',
+  '/tasks/create': '创建模拟任务',
   '/monitoring': '监控中心',
-  '/warnings': '预警中心',
+  '/alerts': '预警中心',
   '/approvals': '审批中心',
   '/reports': '报告中心',
   '/export': '数据导出',
@@ -39,7 +40,10 @@ export default function MainLayout() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  useEffect(() => setSidebarOpen(false), [location.pathname]);
+  useEffect(() => {
+    setSidebarOpen(false);
+    document.title = `${pageTitle} - 超新星模拟平台`;
+  }, [location.pathname, pageTitle]);
 
   const handleUserMenuToggle = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -116,7 +120,7 @@ export default function MainLayout() {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => navigate('/warnings')}
+              onClick={() => navigate('/alerts')}
               className="relative p-2 rounded-lg text-space-300 hover:text-white hover:bg-space-800 transition-colors"
             >
               <Bell className="w-5 h-5" />

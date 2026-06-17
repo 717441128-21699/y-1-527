@@ -29,7 +29,7 @@ const statusConfig: Record<WarningStatus, { label: string; className: string }> 
 };
 
 export default function Alerts() {
-  const { warnings, tasks, updateWarning, currentUser } = useStore();
+  const { warnings, tasks, updateWarning, currentUser, reRunSimulationWithAdjustments } = useStore();
   const [severityFilter, setSeverityFilter] = useState<'all' | WarningSeverity>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | WarningType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | WarningStatus>('all');
@@ -40,6 +40,8 @@ export default function Alerts() {
   const [handlingMethod, setHandlingMethod] = useState<string>('');
   const [eosParam, setEosParam] = useState<string>('');
   const [reactionParam, setReactionParam] = useState<string>('');
+  const [adjustmentType, setAdjustmentType] = useState<'equation_of_state' | 'reaction_rate' | ''>('');
+  const [adjustmentReason, setAdjustmentReason] = useState<string>('');
 
   const filtered = useMemo(() => warnings.filter(w => 
     (severityFilter === 'all' || w.severity === severityFilter) &&
@@ -81,9 +83,42 @@ export default function Alerts() {
     setSelectedIds([]);
   };
 
-  const handleReSimulate = (id: string) => {
-    updateWarning(id, { status: 'resolved', resolution: `重新模拟 - EOS: ${eosParam}, 反应率: ${reactionParam}` });
-    setExpandedId(null); setEosParam(''); setReactionParam('');
+  const handleAdjustAndRerun = (warningId: string) => {
+    const warning = warnings.find(w => w.id === warningId);
+    if (!warning || !adjustmentType || !adjustmentReason) return;
+
+    const task = tasks.find(t => t.id === warning.taskId);
+    if (!task) return;
+
+    let parameter = '';
+    let oldValue = '';
+    let newValue = '';
+
+    if (adjustmentType === 'equation_of_state') {
+      if (!eosParam) return;
+      parameter = 'equationOfState';
+      oldValue = task.parameters.equationOfState;
+      newValue = eosParam;
+    } else if (adjustmentType === 'reaction_rate') {
+      if (!reactionParam) return;
+      parameter = 'reactionNetwork';
+      oldValue = task.parameters.reactionNetwork;
+      newValue = reactionParam;
+    }
+
+    reRunSimulationWithAdjustments(warning.taskId, warningId, {
+      type: adjustmentType,
+      parameter,
+      oldValue,
+      newValue,
+      reason: adjustmentReason
+    });
+
+    setExpandedId(null);
+    setAdjustmentType('');
+    setAdjustmentReason('');
+    setEosParam('');
+    setReactionParam('');
   };
 
   const handleIgnore = (id: string) => {
@@ -96,6 +131,8 @@ export default function Alerts() {
     const TypeIcon = typeConfig[w.type].icon;
     const isExpanded = expandedId === w.id;
     const isSelected = selectedIds.includes(w.id);
+    const task = tasks.find(t => t.id === w.taskId);
+    const warningAdjustments = task?.adjustments.filter(a => a.warningId === w.id) || [];
     const DataItem = ({ label, value, unit = '', isWarning = false }: any) => value !== undefined && (
       <div className="p-3 bg-space-900/50 rounded-lg">
         <p className="text-space-400 text-xs">{label}</p>
@@ -156,32 +193,110 @@ export default function Alerts() {
                     <input type="text" value={resolution} onChange={e => setResolution(e.target.value)} className="input-field" placeholder="请输入备注..." />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm text-space-300">状态方程参数</label>
-                    <select value={eosParam} onChange={e => setEosParam(e.target.value)} className="input-field">
-                      <option value="">保持不变</option>
-                      <option value="LS220">LS220</option>
-                      <option value="SFHo">SFHo</option>
-                      <option value="DD2">DD2</option>
-                      <option value="TM1">TM1</option>
-                    </select>
+                <div className="border border-space-700 rounded-lg p-4 space-y-4 bg-space-900/30">
+                  <h5 className="font-semibold text-white flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-supernova-400" />
+                    预警复核与参数调整
+                  </h5>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm text-space-300">调整类型</label>
+                      <select value={adjustmentType} onChange={e => setAdjustmentType(e.target.value as any)} className="input-field">
+                        <option value="">请选择调整类型</option>
+                        <option value="equation_of_state">状态方程调整</option>
+                        <option value="reaction_rate">核反应网络调整</option>
+                      </select>
+                    </div>
+                    {adjustmentType === 'equation_of_state' && (
+                      <div className="space-y-2">
+                        <label className="text-sm text-space-300">状态方程参数</label>
+                        <select value={eosParam} onChange={e => setEosParam(e.target.value)} className="input-field">
+                          <option value="">请选择</option>
+                          <option value="LS220">LS220</option>
+                          <option value="SFHo">SFHo</option>
+                          <option value="DD2">DD2</option>
+                          <option value="TM1">TM1</option>
+                        </select>
+                        {task && (
+                          <p className="text-xs text-space-500">当前值: {task.parameters.equationOfState}</p>
+                        )}
+                      </div>
+                    )}
+                    {adjustmentType === 'reaction_rate' && (
+                      <div className="space-y-2">
+                        <label className="text-sm text-space-300">核反应网络</label>
+                        <select value={reactionParam} onChange={e => setReactionParam(e.target.value)} className="input-field">
+                          <option value="">请选择</option>
+                          <option value="alpha-network">alpha-network</option>
+                          <option value="full-network">full-network</option>
+                          <option value="r-process-network">r-process</option>
+                        </select>
+                        {task && (
+                          <p className="text-xs text-space-500">当前值: {task.parameters.reactionNetwork}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm text-space-300">核反应率调整</label>
-                    <select value={reactionParam} onChange={e => setReactionParam(e.target.value)} className="input-field">
-                      <option value="">保持不变</option>
-                      <option value="alpha-network">alpha-network</option>
-                      <option value="full-network">full-network</option>
-                      <option value="r-process-network">r-process</option>
-                    </select>
+                    <label className="text-sm text-space-300">调整原因</label>
+                    <textarea
+                      value={adjustmentReason}
+                      onChange={e => setAdjustmentReason(e.target.value)}
+                      className="input-field min-h-[80px] resize-y"
+                      placeholder="请输入调整原因说明..."
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => handleAdjustAndRerun(w.id)}
+                      disabled={!adjustmentType || !adjustmentReason || (adjustmentType === 'equation_of_state' && !eosParam) || (adjustmentType === 'reaction_rate' && !reactionParam)}
+                      className="btn-warning flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      确认调整并重算
+                    </button>
+                    <button onClick={() => handleMarkReviewed(w.id)} className="btn-primary flex items-center gap-2"><Eye className="w-4 h-4" />标记已复核</button>
+                    <button onClick={() => handleIgnore(w.id)} className="btn-secondary flex items-center gap-2"><EyeOff className="w-4 h-4" />忽略</button>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-3">
-                  <button onClick={() => handleMarkReviewed(w.id)} className="btn-primary flex items-center gap-2"><Eye className="w-4 h-4" />标记已复核</button>
-                  <button onClick={() => handleReSimulate(w.id)} className="btn-warning flex items-center gap-2"><RotateCcw className="w-4 h-4" />重新模拟</button>
-                  <button onClick={() => handleIgnore(w.id)} className="btn-secondary flex items-center gap-2"><EyeOff className="w-4 h-4" />忽略</button>
-                </div>
+                {warningAdjustments.length > 0 && (
+                  <div className="border border-space-700 rounded-lg p-4 space-y-3 bg-space-900/30">
+                    <h5 className="font-semibold text-white flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-nickel-400" />
+                      调整记录 ({warningAdjustments.length})
+                    </h5>
+                    <div className="space-y-3">
+                      {warningAdjustments.map(adj => (
+                        <div key={adj.id} className="p-3 bg-space-800/50 rounded-lg border border-space-700">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-space-200">
+                              {adj.type === 'equation_of_state' ? '状态方程' : adj.type === 'reaction_rate' ? '核反应网络' : '网格分辨率'}
+                            </span>
+                            <span className="text-xs text-space-500">
+                              第 {adj.restartCount} 次重算
+                            </span>
+                          </div>
+                          <div className="text-sm space-y-1">
+                            <p className="text-space-400">
+                              参数: <span className="text-space-300">{adj.parameter}</span>
+                            </p>
+                            <p className="text-space-400">
+                              <span className="text-red-400">{adj.oldValue}</span>
+                              <span className="mx-2">→</span>
+                              <span className="text-nickel-400">{adj.newValue}</span>
+                            </p>
+                            <p className="text-space-400">
+                              原因: <span className="text-space-300">{adj.reason}</span>
+                            </p>
+                            <p className="text-xs text-space-500 mt-2">
+                              调整人: {adj.adjustedBy} · {new Date(adj.adjustedAt).toLocaleString('zh-CN')}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

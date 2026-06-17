@@ -27,7 +27,7 @@ const emptyShock: ShockVerification = { shockVelocityValid: false, radiusEvoluti
 const emptyNucleo: NucleosynthesisAssessment = { ni56YieldValid: false, abundanceDistributionValid: false, observationMatch: 75, comments: '' };
 
 export default function Approvals() {
-  const { tasks, currentUser, updateApprovalStatus, updateTask } = useStore();
+  const { tasks, currentUser, approvePostdoc, rejectPostdoc, approveProfessor, rejectProfessor, multimessengerPushed } = useStore();
   const [activeTab, setActiveTab] = useState<TabType>('pending');
   const [selectedTask, setSelectedTask] = useState<SimulationTask | null>(null);
   const [modalLevel, setModalLevel] = useState<ApprovalLevel>('postdoc');
@@ -43,13 +43,32 @@ export default function Approvals() {
     professorTasks: tasks.filter(t => t.approvalStatus === ApprovalStatus.PROFESSOR_PENDING)
   }), [tasks]);
 
-  const approvalHistory = useMemo(() => {
-    let result = tasks.flatMap(t => t.approvalHistory.map(h => ({ ...h, taskName: t.name })));
-    if (filterStatus !== 'all') result = result.filter(r => r.status === filterStatus);
-    if (searchQuery) result = result.filter(r => r.taskName.toLowerCase().includes(searchQuery.toLowerCase()));
-    result.sort((a, b) => sortBy === 'approvedAt' ? new Date(b.approvedAt).getTime() - new Date(a.approvedAt).getTime() : a.level === 'postdoc' ? -1 : 1);
+  const approvalTaskList = useMemo(() => {
+    let result = tasks.filter(t => t.approvalHistory.length > 0 || multimessengerPushed[t.id]);
+    if (filterStatus !== 'all') {
+      result = result.filter(t => {
+        if (filterStatus === 'approved') {
+          return t.approvalStatus === ApprovalStatus.PROFESSOR_APPROVED || t.approvalStatus === ApprovalStatus.POSTDOC_APPROVED;
+        }
+        if (filterStatus === 'rejected') {
+          return t.approvalStatus === ApprovalStatus.PROFESSOR_REJECTED || t.approvalStatus === ApprovalStatus.POSTDOC_REJECTED;
+        }
+        return true;
+      });
+    }
+    if (searchQuery) {
+      result = result.filter(t => t.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    result.sort((a, b) => {
+      if (sortBy === 'approvedAt') {
+        const aTime = a.approvalHistory.length > 0 ? new Date(a.approvalHistory[a.approvalHistory.length - 1].approvedAt).getTime() : 0;
+        const bTime = b.approvalHistory.length > 0 ? new Date(b.approvalHistory[b.approvalHistory.length - 1].approvedAt).getTime() : 0;
+        return bTime - aTime;
+      }
+      return 0;
+    });
     return result;
-  }, [tasks, filterStatus, sortBy, searchQuery]);
+  }, [tasks, filterStatus, sortBy, searchQuery, multimessengerPushed]);
 
   const openModal = (task: SimulationTask, level: ApprovalLevel) => {
     setSelectedTask(task);
@@ -59,12 +78,22 @@ export default function Approvals() {
   };
 
   const handleApproval = (status: 'approved' | 'rejected') => {
-    if (!selectedTask || !currentUser) return;
-    const now = new Date();
-    const newRecord = { id: `appr-${Date.now()}`, taskId: selectedTask.id, level: modalLevel, approver: currentUser.id, status, comments: modalLevel === 'postdoc' ? shockForm.comments : nucleoForm.comments, approvedAt: now, shockDynamicsVerification: shockForm, nucleosynthesisAssessment: modalLevel === 'professor' ? nucleoForm : undefined };
-    const newStatus = modalLevel === 'postdoc' ? (status === 'approved' ? ApprovalStatus.POSTDOC_APPROVED : ApprovalStatus.POSTDOC_REJECTED) : (status === 'approved' ? ApprovalStatus.PROFESSOR_APPROVED : ApprovalStatus.PROFESSOR_REJECTED);
-    updateApprovalStatus(selectedTask.id, newStatus);
-    updateTask(selectedTask.id, { approvalHistory: [...selectedTask.approvalHistory, newRecord] });
+    if (!selectedTask) return;
+    if (modalLevel === 'postdoc') {
+      if (status === 'approved') {
+        const verification = { ...shockForm, comments: shockForm.comments };
+        approvePostdoc(selectedTask.id, verification, shockForm.comments);
+      } else {
+        rejectPostdoc(selectedTask.id, shockForm.comments);
+      }
+    } else {
+      if (status === 'approved') {
+        const assessment = { ...nucleoForm, comments: nucleoForm.comments };
+        approveProfessor(selectedTask.id, assessment, nucleoForm.comments);
+      } else {
+        rejectProfessor(selectedTask.id, nucleoForm.comments);
+      }
+    }
     setSelectedTask(null);
   };
 
@@ -165,27 +194,146 @@ export default function Approvals() {
                       </div>
                     </div>
                   </div>
-                  <div className="card overflow-hidden">
-                    <table className="w-full">
-                      <thead className="bg-space-800/50"><tr className="text-space-300 text-sm">
-                        <th className="px-4 py-3 text-left">任务名称</th><th className="px-4 py-3 text-left">审批级别</th><th className="px-4 py-3 text-left">审批人</th>
-                        <th className="px-4 py-3 text-left">结果</th><th className="px-4 py-3 text-left">时间</th><th className="px-4 py-3 text-left">评论</th>
-                      </tr></thead>
-                      <tbody className="divide-y divide-space-700/30">
-                        {approvalHistory.map((r) => (
-                          <tr key={r.id} className="hover:bg-space-800/30 transition-colors">
-                            <td className="px-4 py-3 text-white text-sm">{r.taskName}</td>
-                            <td className="px-4 py-3"><span className={cn('px-2 py-1 rounded text-xs border', levelMap[r.level].cls)}>{levelMap[r.level].label}</span></td>
-                            <td className="px-4 py-3 text-space-300 text-sm">{r.approver}</td>
-                            <td className="px-4 py-3"><span className={cn('text-sm font-medium', resultMap[r.status].cls)}>{resultMap[r.status].label}</span></td>
-                            <td className="px-4 py-3 text-space-400 text-sm font-mono">{fmt(r.approvedAt)}</td>
-                            <td className="px-4 py-3 text-space-400 text-sm max-w-xs truncate">{r.comments || '-'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {approvalHistory.length === 0 && <div className="p-12 text-center text-space-400">暂无审批记录</div>}
-                  </div>
+                  <motion.div variants={anim.container} initial="hidden" animate="show" className="space-y-4">
+                    {approvalTaskList.map((task) => {
+                      const postdocRecord = task.approvalHistory.find(h => h.level === 'postdoc');
+                      const professorRecord = task.approvalHistory.find(h => h.level === 'professor');
+                      const isPushed = multimessengerPushed[task.id];
+                      return (
+                        <motion.div key={task.id} variants={anim.item} className="card p-5">
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <h3 className="text-white font-semibold text-lg">{task.name}</h3>
+                              <p className="text-space-400 text-sm font-mono mt-1">{task.id}</p>
+                            </div>
+                            {isPushed && (
+                              <span className="px-3 py-1 bg-nickel-500/20 text-nickel-400 border border-nickel-500/50 rounded-full text-xs font-medium flex items-center gap-1">
+                                <CheckCircle className="w-3 h-3" />已推送到多信使观测提案系统
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mb-4">
+                            <p className="text-space-300 text-sm">
+                              <Flame className="w-3.5 h-3.5 text-supernova-400 inline mr-1" />
+                              质量 {task.parameters.mass}M☉ · 
+                              <Atom className="w-3.5 h-3.5 text-neutrino-400 inline mx-1" />
+                              金属丰度 {task.parameters.metallicity} · 
+                              <Zap className="w-3.5 h-3.5 text-nickel-400 inline mx-1" />
+                              旋转 {task.parameters.rotationVelocity}km/s
+                            </p>
+                          </div>
+                          <div className="space-y-3">
+                            <div className={cn('flex items-start gap-3 p-3 rounded-lg border', postdocRecord ? 'border-space-600/50 bg-space-800/30' : 'border-space-700/30 bg-space-800/10 opacity-60')}>
+                              <div className={cn('w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0', postdocRecord ? 'bg-neutrino-500/20' : 'bg-space-700/30')}>
+                                <Users className={cn('w-4 h-4', postdocRecord ? 'text-neutrino-400' : 'text-space-500')} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <p className={cn('font-medium text-sm', postdocRecord ? 'text-white' : 'text-space-500')}>博士后验证</p>
+                                  {postdocRecord && <span className={cn('text-xs font-medium', resultMap[postdocRecord.status].cls)}>{resultMap[postdocRecord.status].label}</span>}
+                                  {!postdocRecord && <span className="text-xs text-space-500">待处理</span>}
+                                </div>
+                                {postdocRecord ? (
+                                  <div className="mt-2 space-y-1">
+                                    <p className="text-space-400 text-xs">审批人: <span className="text-space-300">{postdocRecord.approver}</span></p>
+                                    <p className="text-space-400 text-xs">时间: <span className="text-space-300 font-mono">{fmt(postdocRecord.approvedAt)}</span></p>
+                                    {postdocRecord.shockDynamicsVerification && (
+                                      <div className="mt-2 space-y-1">
+                                        <p className="text-space-300 text-xs font-medium">验证项:</p>
+                                        <div className="flex flex-wrap gap-2">
+                                          <span className={cn('px-2 py-0.5 rounded text-xs', postdocRecord.shockDynamicsVerification.shockVelocityValid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400')}>
+                                            激波速度 {postdocRecord.shockDynamicsVerification.shockVelocityValid ? '✓' : '✗'}
+                                          </span>
+                                          <span className={cn('px-2 py-0.5 rounded text-xs', postdocRecord.shockDynamicsVerification.radiusEvolutionValid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400')}>
+                                            半径演化 {postdocRecord.shockDynamicsVerification.radiusEvolutionValid ? '✓' : '✗'}
+                                          </span>
+                                          <span className={cn('px-2 py-0.5 rounded text-xs', postdocRecord.shockDynamicsVerification.energyConservationValid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400')}>
+                                            能量守恒 {postdocRecord.shockDynamicsVerification.energyConservationValid ? '✓' : '✗'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {postdocRecord.comments && (
+                                      <p className="text-space-400 text-xs mt-2">评论: <span className="text-space-300">{postdocRecord.comments}</span></p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-space-500 text-xs mt-1">等待博士后进行激波动力学验证</p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex justify-center">
+                              <ArrowRight className="w-4 h-4 text-space-500" />
+                            </div>
+                            <div className={cn('flex items-start gap-3 p-3 rounded-lg border', professorRecord ? 'border-space-600/50 bg-space-800/30' : 'border-space-700/30 bg-space-800/10 opacity-60')}>
+                              <div className={cn('w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0', professorRecord ? 'bg-supernova-500/20' : 'bg-space-700/30')}>
+                                <BookOpen className={cn('w-4 h-4', professorRecord ? 'text-supernova-400' : 'text-space-500')} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <p className={cn('font-medium text-sm', professorRecord ? 'text-white' : 'text-space-500')}>教授确认</p>
+                                  {professorRecord && <span className={cn('text-xs font-medium', resultMap[professorRecord.status].cls)}>{resultMap[professorRecord.status].label}</span>}
+                                  {!professorRecord && <span className="text-xs text-space-500">待处理</span>}
+                                </div>
+                                {professorRecord ? (
+                                  <div className="mt-2 space-y-1">
+                                    <p className="text-space-400 text-xs">审批人: <span className="text-space-300">{professorRecord.approver}</span></p>
+                                    <p className="text-space-400 text-xs">时间: <span className="text-space-300 font-mono">{fmt(professorRecord.approvedAt)}</span></p>
+                                    {professorRecord.nucleosynthesisAssessment && (
+                                      <div className="mt-2 space-y-2">
+                                        <p className="text-space-300 text-xs font-medium">评估项:</p>
+                                        <div className="flex flex-wrap gap-2">
+                                          <span className={cn('px-2 py-0.5 rounded text-xs', professorRecord.nucleosynthesisAssessment.ni56YieldValid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400')}>
+                                            镍-56产额 {professorRecord.nucleosynthesisAssessment.ni56YieldValid ? '✓' : '✗'}
+                                          </span>
+                                          <span className={cn('px-2 py-0.5 rounded text-xs', professorRecord.nucleosynthesisAssessment.abundanceDistributionValid ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400')}>
+                                            丰度分布 {professorRecord.nucleosynthesisAssessment.abundanceDistributionValid ? '✓' : '✗'}
+                                          </span>
+                                          <span className="px-2 py-0.5 rounded text-xs bg-supernova-500/20 text-supernova-400">
+                                            观测匹配度 {professorRecord.nucleosynthesisAssessment.observationMatch}%
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {professorRecord.comments && (
+                                      <p className="text-space-400 text-xs mt-2">评论: <span className="text-space-300">{professorRecord.comments}</span></p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-space-500 text-xs mt-1">等待教授进行核合成评估</p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex justify-center">
+                              <ArrowRight className="w-4 h-4 text-space-500" />
+                            </div>
+                            <div className={cn('flex items-start gap-3 p-3 rounded-lg border', isPushed ? 'border-nickel-500/50 bg-nickel-500/10' : 'border-space-700/30 bg-space-800/10 opacity-60')}>
+                              <div className={cn('w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0', isPushed ? 'bg-nickel-500/20' : 'bg-space-700/30')}>
+                                <FileCheck className={cn('w-4 h-4', isPushed ? 'text-nickel-400' : 'text-space-500')} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <p className={cn('font-medium text-sm', isPushed ? 'text-white' : 'text-space-500')}>推送到多信使观测提案系统</p>
+                                  {isPushed && <span className="text-xs font-medium text-nickel-400">已推送</span>}
+                                  {!isPushed && <span className="text-xs text-space-500">待推送</span>}
+                                </div>
+                                <p className={cn('text-xs mt-1', isPushed ? 'text-space-300' : 'text-space-500')}>
+                                  {isPushed ? '模拟结果已正式推送到多信使观测提案系统' : '教授审批通过后将自动推送'}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                    {approvalTaskList.length === 0 && (
+                      <motion.div variants={anim.item} className="card p-12 text-center">
+                        <Clock className="w-16 h-16 mx-auto text-space-500 opacity-50 mb-4" />
+                        <p className="text-space-300 text-lg">暂无审批记录</p>
+                        <p className="text-space-500 text-sm mt-1">还没有任何审批流程被发起</p>
+                      </motion.div>
+                    )}
+                  </motion.div>
                 </motion.div>
               )}
             </div>

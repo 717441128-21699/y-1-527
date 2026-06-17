@@ -23,7 +23,7 @@ const menuItems = [
   { path: '/', label: '首页看板', icon: LayoutDashboard },
   { path: '/tasks', label: '任务管理', icon: Atom },
   { path: '/monitoring', label: '监控中心', icon: Activity },
-  { path: '/warnings', label: '预警中心', icon: AlertTriangle },
+  { path: '/alerts', label: '预警中心', icon: AlertTriangle },
   { path: '/approvals', label: '审批中心', icon: CheckSquare },
   { path: '/reports', label: '报告中心', icon: FileText },
   { path: '/export', label: '数据导出', icon: Download },
